@@ -1,0 +1,125 @@
+# Teutonic-II 110B-A7B fine-tuning recipe on HellaSwag.
+#
+# Single-node quick-start (8 GPUs):
+#   torchrun --nproc-per-node 8 -m nemo_automodel.cli.app \
+#     examples/llm_finetune/teutonic_ii/teutonic_ii_110b_hellaswag.yaml
+#
+# Multi-node example (4 nodes × 8 H100 = 32 GPUs, ep_size=32):
+#   torchrun --nnodes 4 --nproc-per-node 8 -m nemo_automodel.cli.app \
+#     examples/llm_finetune/teutonic_ii/teutonic_ii_110b_hellaswag.yaml \
+#     distributed.ep_size=32 distributed.pp_size=1
+#
+# The model is loaded from a local path; set pretrained_model_name_or_path to
+# your checkpoint directory or a HuggingFace repo ID.
+
+recipe: TrainFinetuneRecipeForNextTokenPrediction
+
+seed: 1234
+
+step_scheduler:
+  global_batch_size: 64
+  local_batch_size: 2
+  ckpt_every_steps: 25
+  val_every_steps: 500
+  num_epochs: 1
+  max_steps: 100
+
+distributed:
+  strategy: fsdp2
+  tp_size: 1
+  cp_size: 1
+  pp_size: 1
+  ep_size: 8
+
+  sequence_parallel: false
+  activation_checkpointing: true
+
+  moe:
+    reshard_after_forward: false
+    wrap_outer_model: false
+
+dist_env:
+  backend: nccl
+  timeout_minutes: 30
+
+model:
+  _target_: nemo_automodel.NeMoAutoModelForCausalLM.from_config
+  config:
+    _target_: nemo_automodel.components.models.teutonic_ii.config.MiMoV2Config.from_pretrained
+    # Replace with your local checkpoint path or HuggingFace repo ID.
+    pretrained_model_name_or_path: /root/bigben/BT/teutonic_mining/models/teutonic-II-110B-A7B-to7
+    name_or_path: /root/bigben/BT/teutonic_mining/models/teutonic-II-110B-A7B-to7
+  trust_remote_code: false
+  load_base_model: true
+  backend:
+    _target_: nemo_automodel.components.models.common.BackendConfig
+    attn: sdpa
+    linear: torch
+    rms_norm: torch_fp32
+    rope_fusion: false
+    dispatcher: hybridep
+    experts: torch_mm
+    gate_precision: float32
+    enable_hf_state_dict_adapter: true
+    enable_fsdp_optimizations: true
+
+checkpoint:
+  enabled: true
+  checkpoint_dir: checkpoints/teutonic_ii_110b
+  model_save_format: safetensors
+  save_consolidated: false
+  # Teutonic-II checkpoint is BF16, no dequantization needed.
+  dequantize_base_checkpoint: false
+
+loss_fn:
+  _target_: nemo_automodel.components.loss.masked_ce.MaskedCrossEntropy
+
+dataset:
+  _target_: nemo_automodel.components.datasets.llm.hellaswag.HellaSwag
+  path_or_dataset: rowan/hellaswag
+  split: train
+  tokenizer:
+    _target_: transformers.AutoTokenizer.from_pretrained
+    pretrained_model_name_or_path: /root/bigben/BT/teutonic_mining/models/teutonic-II-110B-A7B-to7
+    trust_remote_code: false
+
+packed_sequence:
+  packed_sequence_size: 0
+
+dataloader:
+  _target_: torchdata.stateful_dataloader.StatefulDataLoader
+  collate_fn:
+    _target_: nemo_automodel.components.datasets.utils.default_collater
+    pad_seq_len_divisible: 64
+  shuffle: true
+
+validation_dataset:
+  _target_: nemo_automodel.components.datasets.llm.hellaswag.HellaSwag
+  path_or_dataset: rowan/hellaswag
+  split: validation
+  num_samples_limit: 64
+  tokenizer:
+    _target_: transformers.AutoTokenizer.from_pretrained
+    pretrained_model_name_or_path: /root/bigben/BT/teutonic_mining/models/teutonic-II-110B-A7B-to7
+    trust_remote_code: false
+
+validation_dataloader:
+  _target_: torchdata.stateful_dataloader.StatefulDataLoader
+  collate_fn:
+    _target_: nemo_automodel.components.datasets.utils.default_collater
+    pad_seq_len_divisible: 64
+  shuffle: false
+  drop_last: true
+
+optimizer:
+  _target_: torch.optim.AdamW
+  betas: [0.9, 0.95]
+  eps: 1e-8
+  lr: 1e-5
+  weight_decay: 0.1
+
+wandb:
+  enable: false
+  project: automodel-teutonic-ii
+  name: teutonic_ii_110b_hellaswag
+  mode: online
