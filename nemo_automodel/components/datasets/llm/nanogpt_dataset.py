@@ -60,7 +60,7 @@ import os
 import random
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator, List, Sequence
+from typing import Any, Iterator, List, Sequence
 
 import numpy as np
 import torch
@@ -234,7 +234,7 @@ def _get_start_end_pos_single_file(total_tokens: int, total_workers: int, global
     return file_start_pos, file_end_pos
 
 
-def _get_worker_id_and_total_workers(worker: get_worker_info) -> tuple[int, int]:
+def _get_worker_id_and_total_workers(worker: Any) -> tuple[int, int]:
     """
     Get the total number of workers.
     """
@@ -273,6 +273,8 @@ class NanogptDatasetConfig:
     """Shuffle the order of shards each epoch/iteration."""
     align_to_bos: bool = False
     """Ensure every returned slice starts at a ``bos_token`` boundary."""
+    repeat: bool = True
+    """Whether to restart iteration after exhausting the configured files."""
 
     def build(self) -> "NanogptDataset":
         """Build a :class:`NanogptDataset` from this :class:`NanogptDatasetConfig`."""
@@ -282,6 +284,7 @@ class NanogptDatasetConfig:
             bos_token=self.bos_token,
             shuffle_files=self.shuffle_files,
             align_to_bos=self.align_to_bos,
+            repeat=self.repeat,
         )
 
 
@@ -314,6 +317,9 @@ class NanogptDataset(IterableDataset):
             next BOS token and starts there. Uses .bos.idx files when available
             for efficient search, falls back to linear search otherwise.
             Requires ``bos_token`` to be provided.
+        repeat : bool, default True
+            Whether to restart iteration after the configured files are exhausted.
+            Training usually wants ``True``; validation should set ``False``.
         bos_token : int, optional, default None.
             Token ID marking beginning-of-document.
     """
@@ -326,6 +332,7 @@ class NanogptDataset(IterableDataset):
         bos_token: int | None = None,
         shuffle_files: bool = False,
         align_to_bos: bool = False,
+        repeat: bool = True,
     ) -> None:
         super().__init__()
         if isinstance(file_pattern, (str, Path)):
@@ -337,6 +344,7 @@ class NanogptDataset(IterableDataset):
         self.seq_len = int(seq_len)
         self.shuffle_files = shuffle_files
         self.align_to_bos = align_to_bos
+        self.repeat = repeat
         if self.align_to_bos and bos_token is None:
             raise ValueError("bos_token must be provided when align_to_bos is True")
         self.bos_token = bos_token
@@ -456,6 +464,9 @@ class NanogptDataset(IterableDataset):
         while True:
             for file in worker_files:
                 yield from self._process_file_tokens(file, split_single_file, file_start_pos, file_end_pos)
+
+            if not self.repeat:
+                return
 
             # Start a new epoch, optionally reshuffle
             if self.shuffle_files:
