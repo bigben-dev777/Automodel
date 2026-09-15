@@ -1,0 +1,142 @@
+# Teutonic-II 110B-A7B pretraining from random initialization (Genesis checkpoint).
+#
+# Single-node quick-start (8 GPUs, reduced batch/steps for testing):
+#   torchrun --nproc-per-node 8 -m nemo_automodel.cli.app \
+#     examples/llm_finetune/teutonic_ii/teutonic_ii_110b_pretrain.yaml \
+#     step_scheduler.global_batch_size=8 step_scheduler.local_batch_size=1 \
+#     step_scheduler.max_steps=100 distributed.ep_size=8 distributed.pp_size=1
+#
+# Production (16 nodes × 8 H100 = 128 GPUs, pp_size=4 × ep_size=32):
+#   torchrun --nnodes 16 --nproc-per-node 8 -m nemo_automodel.cli.app \
+#     examples/llm_finetune/teutonic_ii/teutonic_ii_110b_pretrain.yaml
+#
+# SLURM:
+#   cp slurm.sub my_cluster.sub
+#   # Set CONFIG to this file and request 16 nodes × 8 GPUs.
+#   sbatch my_cluster.sub
+#
+# Dataset: prepare tokenized data with scripts/prepare_pretraining_data.sh and
+# set the `paths` field in the dataset blocks below.
+
+recipe: TrainFinetuneRecipeForNextTokenPrediction
+
+rng:
+  _target_: nemo_automodel.components.training.rng.StatefulRNG
+  seed: 1234
+  ranked: true
+
+step_scheduler:
+  global_batch_size: 512
+  local_batch_size: 4
+  ckpt_every_steps: 500
+  val_every_steps: 100
+  num_epochs: 1
+  max_steps: 250000
+
+distributed:
+  strategy: fsdp2
+  tp_size: 1
+  cp_size: 1
+  # pp × ep = total GPUs per data-parallel replica.
+  # Default: pp=4, ep=32 → 128 GPUs, dp=1 (all GPUs in one replica).
+  pp_size: 4
+  ep_size: 32
+
+  sequence_parallel: false
+  # Activation checkpointing is strongly recommended at 110B scale.
+  activation_checkpointing: true
+
+  pipeline:
+    pp_schedule: interleaved1f1b
+    pp_microbatch_size: 1
+    # 45 layers / (pp_size=4 × 2 virtual stages) = ~5 layers per stage.
+    layers_per_stage: 2
+    round_virtual_stages_to_pp_multiple: down
+    scale_grads_in_schedule: false
+    patch_inner_model: false
+    patch_causal_lm_model: false
+
+  moe:
+    reshard_after_forward: false
+    wrap_outer_model: false
+
+dist_env:
+  backend: nccl
+  timeout_minutes: 60
+
+model:
+  _target_: nemo_automodel.NeMoAutoModelForCausalLM.from_config
+  config:
+    _target_: nemo_automodel.components.models.teutonic_ii.config.MiMoV2Config.from_pretrained
+    # Genesis checkpoint supplies the architecture config; weights are NOT loaded
+    # (load_base_model: false below). Replace with your own checkpoint path.
+    pretrained_model_name_or_path: /root/bigben/BT/teutonic_mining/models/teutonic-II-110B-A7B-to7
+    name_or_path: /root/bigben/BT/teutonic_mining/models/teutonic-II-110B-A7B-to7
+  trust_remote_code: false
+  # false = random weight initialization (pretraining from scratch).
+  load_base_model: false
+  backend:
+    _target_: nemo_automodel.components.models.common.BackendConfig
+    attn: sdpa
+    linear: torch
+    rms_norm: torch_fp32
+    rope_fusion: false
+    dispatcher: hybridep
+    experts: torch_mm
+    gate_precision: float32
+    enable_hf_state_dict_adapter: true
+    enable_fsdp_optimizations: true
+
+checkpoint:
+  enabled: true
+  checkpoint_dir: checkpoints/teutonic_ii_110b_pretrain
+  model_save_format: safetensors
+  save_consolidated: false
+  dequantize_base_checkpoint: false
+
+loss_fn:
+  _target_: nemo_automodel.components.loss.masked_ce.MaskedCrossEntropy
+
+# Pre-tokenized .npy shards built by datasets/build_datasets.py.
+# Set file_pattern to your training shards and the validation block below.
+dataset:
+  _target_: nemo_automodel.components.datasets.llm.npy_shard_dataset.NpyShardDataset
+  file_pattern: /root/bigben/BT/teutonic_mining/datas/npy_shard_cache/shards_*train*.npy
+  seq_len: 2048
+  shuffle_files: true
+
+dataloader:
+  _target_: torchdata.stateful_dataloader.StatefulDataLoader
+  shuffle: false
+  collate_fn: nemo_automodel.components.datasets.utils.default_collater
+
+validation_dataset:
+  _target_: nemo_automodel.components.datasets.llm.npy_shard_dataset.NpyShardDataset
+  file_pattern: /root/bigben/BT/teutonic_mining/datas/npy_shard_cache/shards_*val*.npy
+  seq_len: 2048
+  shuffle_files: false
+  loop: false
+
+validation_dataloader:
+  _target_: torchdata.stateful_dataloader.StatefulDataLoader
+  shuffle: false
+  collate_fn: nemo_automodel.components.datasets.utils.default_collater
+
+optimizer:
+  _target_: torch.optim.AdamW
+  betas: [0.9, 0.95]
+  eps: 1e-5
+  # Scaled for 7B active parameters. Tune as: lr ∝ sqrt(global_batch_size / 512).
+  lr: 3e-4
+  weight_decay: 0.1
+
+lr_scheduler:
+  lr_decay_style: cosine
+  lr_warmup_steps: 2000
+  min_lr: 3e-5
+
+wandb:
+  enable: false
+  project: teutonic-ii-pretrain
+  name: teutonic_ii_110b_pretrain
+  mode: online

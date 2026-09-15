@@ -1,0 +1,143 @@
+# Teutonic-II 110B-A7B Continuous Pre-Training (CPT) recipe.
+#
+# CPT starts from a trained HF checkpoint and continues training on a corpus,
+# unlike pretraining-from-scratch (load_base_model: false) or task fine-tuning.
+# Typical use-cases: domain adaptation, mid-training on curated data, recovery
+# from a partially trained run.
+#
+# Single-node quick-start (8 GPUs):
+#   torchrun --nproc-per-node 8 -m nemo_automodel.cli.app \
+#     examples/llm_finetune/teutonic_ii/teutonic_ii_110b_cpt.yaml \
+#     step_scheduler.global_batch_size=8 step_scheduler.local_batch_size=1 \
+#     step_scheduler.max_steps=100 distributed.ep_size=8 distributed.pp_size=1
+#
+# Production (16 nodes × 8 H100 = 128 GPUs):
+#   torchrun --nnodes 16 --nproc-per-node 8 -m nemo_automodel.cli.app \
+#     examples/llm_finetune/teutonic_ii/teutonic_ii_110b_cpt.yaml
+#
+# Resuming an interrupted CPT run (restores optimizer state + step counter):
+#   Set checkpoint.restore_from to the directory of the last saved checkpoint,
+#   e.g.:  checkpoint.restore_from=checkpoints/teutonic_ii_110b_cpt/epoch_0_step_5000
+
+recipe: TrainFinetuneRecipeForNextTokenPrediction
+
+rng:
+  _target_: nemo_automodel.components.training.rng.StatefulRNG
+  seed: 1234
+  ranked: true
+
+step_scheduler:
+  global_batch_size: 256
+  local_batch_size: 2
+  ckpt_every_steps: 500
+  val_every_steps: 100
+  num_epochs: 1
+  max_steps: 50000
+
+distributed:
+  strategy: fsdp2
+  tp_size: 1
+  cp_size: 1
+  pp_size: 4
+  ep_size: 32
+
+  sequence_parallel: false
+  activation_checkpointing: true
+
+  pipeline:
+    pp_schedule: interleaved1f1b
+    pp_microbatch_size: 1
+    layers_per_stage: 2
+    round_virtual_stages_to_pp_multiple: down
+    scale_grads_in_schedule: false
+    patch_inner_model: false
+    patch_causal_lm_model: false
+
+  moe:
+    reshard_after_forward: false
+    wrap_outer_model: false
+
+dist_env:
+  backend: nccl
+  timeout_minutes: 60
+
+model:
+  _target_: nemo_automodel.NeMoAutoModelForCausalLM.from_config
+  config:
+    _target_: nemo_automodel.components.models.teutonic_ii.config.MiMoV2Config.from_pretrained
+    pretrained_model_name_or_path: /root/bigben/BT/teutonic_mining/models/teutonic-II-110B-A7B-to7
+    name_or_path: /root/bigben/BT/teutonic_mining/models/teutonic-II-110B-A7B-to7
+  trust_remote_code: false
+  # true = load weights from the HF checkpoint above (CPT continues from them).
+  load_base_model: true
+  backend:
+    _target_: nemo_automodel.components.models.common.BackendConfig
+    attn: sdpa
+    linear: torch
+    rms_norm: torch_fp32
+    rope_fusion: false
+    dispatcher: hybridep
+    experts: torch_mm
+    gate_precision: float32
+    enable_hf_state_dict_adapter: true
+    enable_fsdp_optimizations: true
+
+checkpoint:
+  enabled: true
+  checkpoint_dir: checkpoints/teutonic_ii_110b_cpt
+  # Set restore_from to an Automodel checkpoint dir to resume a CPT run
+  # (restores optimizer state + step counter).  Leave null to start CPT fresh.
+  restore_from: null
+  model_save_format: safetensors
+  save_consolidated: false
+  # Teutonic-II checkpoint is BF16; no FP8 dequantization needed.
+  dequantize_base_checkpoint: false
+
+loss_fn:
+  _target_: nemo_automodel.components.loss.masked_ce.MaskedCrossEntropy
+
+# Pre-tokenized .npy shards built by datasets/build_datasets.py.
+# Set file_pattern to your CPT corpus shards (can be domain-specific).
+dataset:
+  _target_: nemo_automodel.components.datasets.llm.npy_shard_dataset.NpyShardDataset
+  file_pattern: /root/bigben/BT/teutonic_mining/datas/npy_shard_cache/shards_*train*.npy
+  seq_len: 2048
+  shuffle_files: true
+
+dataloader:
+  _target_: torchdata.stateful_dataloader.StatefulDataLoader
+  shuffle: false
+  collate_fn: nemo_automodel.components.datasets.utils.default_collater
+
+validation_dataset:
+  _target_: nemo_automodel.components.datasets.llm.npy_shard_dataset.NpyShardDataset
+  file_pattern: /root/bigben/BT/teutonic_mining/datas/npy_shard_cache/shards_*val*.npy
+  seq_len: 2048
+  shuffle_files: false
+  loop: false
+
+validation_dataloader:
+  _target_: torchdata.stateful_dataloader.StatefulDataLoader
+  shuffle: false
+  collate_fn: nemo_automodel.components.datasets.utils.default_collater
+
+optimizer:
+  _target_: torch.optim.AdamW
+  betas: [0.9, 0.95]
+  eps: 1e-5
+  # CPT uses a lower LR than from-scratch pretraining to avoid catastrophic
+  # forgetting.  A good starting point is ~1/3 of the original pretraining peak.
+  lr: 1e-4
+  weight_decay: 0.1
+
+lr_scheduler:
+  lr_decay_style: cosine
+  # Short re-warmup prevents loss spikes when resuming from HF weights.
+  lr_warmup_steps: 200
+  min_lr: 1e-5
+
+wandb:
+  enable: false
+  project: teutonic-ii-cpt
+  name: teutonic_ii_110b_cpt
+  mode: online
