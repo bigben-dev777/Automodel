@@ -54,6 +54,8 @@ class NpyShardDataset(IterableDataset):
         loop: If ``True`` (default), cycle through shards forever — use for
             training so ``max_steps`` controls termination.  Set ``False`` for
             validation to do a single finite pass.
+        num_samples: Stop after yielding this many samples.  ``None`` means no
+            limit.  Useful for capping validation length without a full shard sweep.
     """
 
     def __init__(
@@ -63,6 +65,7 @@ class NpyShardDataset(IterableDataset):
         *,
         shuffle_files: bool = True,
         loop: bool = True,
+        num_samples: int | None = None,
     ) -> None:
         super().__init__()
         if isinstance(file_pattern, (str, Path)):
@@ -74,6 +77,7 @@ class NpyShardDataset(IterableDataset):
         self.seq_len = int(seq_len)
         self.shuffle_files = shuffle_files
         self.loop = loop
+        self.num_samples = num_samples
 
     # ------------------------------------------------------------------
     # Worker / rank helpers
@@ -124,9 +128,14 @@ class NpyShardDataset(IterableDataset):
         if self.shuffle_files:
             rng.shuffle(worker_files)
 
+        emitted = 0
         while True:
             for path in worker_files:
-                yield from self._iter_shard(path)
+                for sample in self._iter_shard(path):
+                    yield sample
+                    emitted += 1
+                    if self.num_samples is not None and emitted >= self.num_samples:
+                        return
             if not self.loop:
                 return
             # Reshuffle at the start of each new epoch.
