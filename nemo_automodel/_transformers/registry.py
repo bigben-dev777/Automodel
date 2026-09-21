@@ -216,7 +216,7 @@ MODEL_ARCH_MAPPING = OrderedDict(
         (
             "TeutonicIIForCausalLM",
             (
-                "nemo_automodel.components.models.mimo_v25.model",
+                "nemo_automodel.components.models.teutonic_ii.model",
                 "TeutonicIIForCausalLM",
             ),
         ),
@@ -456,7 +456,7 @@ _CUSTOM_CONFIG_REGISTRATIONS: Dict[str, Tuple[str, str]] = {
     ),
     "mimo_v2": ("nemo_automodel.components.models.mimo_v25.config", "MiMoV2Config"),
     "teutonic_ii": (
-        "nemo_automodel.components.models.mimo_v25.config",
+        "nemo_automodel.components.models.teutonic_ii.config",
         "TeutonicIIConfig",
     ),
     "minimax_m3_vl": (

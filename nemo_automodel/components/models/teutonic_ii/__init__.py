@@ -12,15 +12,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from nemo_automodel.components.models.mimo_v25.config import MiMoV2Config
-from nemo_automodel.components.models.mimo_v25.model import MiMoV2ForCausalLM, MiMoV2Model
-from nemo_automodel.components.models.mimo_v25.state_dict_adapter import (
-    MiMoV2StateDictAdapter,
+from nemo_automodel.components.models.teutonic_ii.config import TeutonicIIConfig
+from nemo_automodel.components.models.teutonic_ii.model import (
+    ModelClass,
+    TeutonicIIForCausalLM,
+    TeutonicIIModel,
+)
+from nemo_automodel.components.models.teutonic_ii.state_dict_adapter import (
+    TeutonicIIStateDictAdapter,
 )
 
 __all__ = [
-    "MiMoV2Config",
-    "MiMoV2ForCausalLM",
-    "MiMoV2Model",
-    "MiMoV2StateDictAdapter",
+    "ModelClass",
+    "TeutonicIIConfig",
+    "TeutonicIIForCausalLM",
+    "TeutonicIIModel",
+    "TeutonicIIStateDictAdapter",
 ]

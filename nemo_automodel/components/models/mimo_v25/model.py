@@ -47,10 +47,7 @@ from nemo_automodel.components.models.common.utils import (
     cast_model_to_dtype,
     compute_lm_head_logits,
 )
-from nemo_automodel.components.models.mimo_v25.config import (
-    MiMoV2Config,
-    TeutonicIIConfig,
-)
+from nemo_automodel.components.models.mimo_v25.config import MiMoV2Config
 from nemo_automodel.components.moe.config import MoEConfig
 from nemo_automodel.components.moe.fsdp_mixin import MoEFSDPSyncMixin
 from nemo_automodel.components.moe.layers import MLP, MoE
@@ -717,12 +714,6 @@ class MiMoV2Model(nn.Module):
             self.norm.reset_parameters()
         for layer in self.layers.values():
             layer.init_weights(buffer_device)
-
-
-class TeutonicIIModel(MiMoV2Model):
-    """Teutonic-II reuses the MiMo v2 decoder implementation."""
-
-
 class MiMoV2ForCausalLM(HFCheckpointingMixin, nn.Module, MoEFSDPSyncMixin):
     """NeMo AutoModel causal LM wrapper for MiMo-V2.5-Pro."""
 
@@ -921,28 +912,10 @@ class MiMoV2ForCausalLM(HFCheckpointingMixin, nn.Module, MoEFSDPSyncMixin):
         if _has_dtensor_params(self):
             return
         cast_model_to_dtype(self, dtype)
-
-
-class TeutonicIIForCausalLM(MiMoV2ForCausalLM):
-    """Teutonic-II wrapper that shares MiMo v2 weights and execution semantics."""
-
-    @classmethod
-    def from_pretrained(
-        cls,
-        pretrained_model_name_or_path: str,
-        *model_args,
-        **kwargs,
-    ) -> "TeutonicIIForCausalLM":
-        config = TeutonicIIConfig.from_pretrained(pretrained_model_name_or_path)
-        return cls.from_config(config, *model_args, **kwargs)
-
-
 ModelClass = MiMoV2ForCausalLM
 
 __all__ = [
     "MiMoV2ForCausalLM",
     "MiMoV2Model",
-    "TeutonicIIForCausalLM",
-    "TeutonicIIModel",
     "ModelClass",
 ]

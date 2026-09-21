@@ -12,10 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from nemo_automodel.components.models.mimo_v25.config import (
-    MiMoV2Config,
-    TeutonicIIConfig,
-)
+from nemo_automodel.components.models.mimo_v25.config import MiMoV2Config
+from nemo_automodel.components.models.teutonic_ii.config import TeutonicIIConfig
 
 
 class TestTeutonicIIConfig:

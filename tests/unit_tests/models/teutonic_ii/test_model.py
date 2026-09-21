@@ -13,12 +13,15 @@
 # limitations under the License.
 
 from nemo_automodel.components.models.common import BackendConfig
-from nemo_automodel.components.models.mimo_v25.config import TeutonicIIConfig
-from nemo_automodel.components.models.mimo_v25.model import TeutonicIIForCausalLM
+from nemo_automodel.components.models.teutonic_ii.config import TeutonicIIConfig
+from nemo_automodel.components.models.teutonic_ii.model import TeutonicIIForCausalLM
+from nemo_automodel.components.models.teutonic_ii.state_dict_adapter import (
+    TeutonicIIStateDictAdapter,
+)
 from nemo_automodel.components.moe.layers import MoE
 
 
-def test_teutonic_ii_builds_shared_experts_from_mimo_runtime():
+def test_teutonic_ii_builds_shared_experts_from_dedicated_runtime():
     config = TeutonicIIConfig(
         vocab_size=64,
         hidden_size=32,
@@ -58,7 +61,7 @@ def test_teutonic_ii_builds_shared_experts_from_mimo_runtime():
         experts="torch",
         dispatcher="torch",
         rope_fusion=False,
-        enable_hf_state_dict_adapter=False,
+        enable_hf_state_dict_adapter=True,
     )
 
     model = TeutonicIIForCausalLM(config, backend=backend)
@@ -66,3 +69,4 @@ def test_teutonic_ii_builds_shared_experts_from_mimo_runtime():
     assert "rotary_emb" in model._keep_in_fp32_modules_strict
     assert isinstance(model.model.layers["1"].mlp, MoE)
     assert model.model.layers["1"].mlp.shared_experts is not None
+    assert isinstance(model.state_dict_adapter, TeutonicIIStateDictAdapter)

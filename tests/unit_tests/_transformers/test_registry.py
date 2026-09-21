@@ -509,7 +509,7 @@ def test_teutonic_ii_config_loads_without_trust_remote_code(tmp_path):
     from transformers import AutoConfig
 
     import nemo_automodel._transformers.registry  # noqa: F401
-    from nemo_automodel.components.models.mimo_v25.config import TeutonicIIConfig
+    from nemo_automodel.components.models.teutonic_ii.config import TeutonicIIConfig
 
     (tmp_path / "config.json").write_text(
         json.dumps(
@@ -546,7 +546,7 @@ def test_teutonic_ii_arch_alias_in_model_arch_mapping():
 
     assert "TeutonicIIForCausalLM" in MODEL_ARCH_MAPPING
     module_path, cls_name = MODEL_ARCH_MAPPING["TeutonicIIForCausalLM"]
-    assert module_path == "nemo_automodel.components.models.mimo_v25.model"
+    assert module_path == "nemo_automodel.components.models.teutonic_ii.model"
     assert cls_name == "TeutonicIIForCausalLM"
 
 
