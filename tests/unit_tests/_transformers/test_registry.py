@@ -190,7 +190,10 @@ def test_step3p7_registry_and_custom_config_registration():
     """Step3p7 VLM support is available through the lazy registry and AutoConfig."""
     from transformers.models.auto.configuration_auto import CONFIG_MAPPING
 
-    from nemo_automodel._transformers.registry import _CUSTOM_CONFIG_REGISTRATIONS, MODEL_ARCH_MAPPING
+    from nemo_automodel._transformers.registry import (
+        _CUSTOM_CONFIG_REGISTRATIONS,
+        MODEL_ARCH_MAPPING,
+    )
 
     assert MODEL_ARCH_MAPPING["Step3p7ForConditionalGeneration"] == (
         "nemo_automodel.components.models.step3p7.model",
@@ -219,9 +222,15 @@ def test_resolve_custom_config_cls_uses_registry_for_non_builtin(monkeypatch):
         pass
 
     fake_module = types.SimpleNamespace(FakeConfig=FakeConfig)
-    monkeypatch.setitem(reg._CUSTOM_CONFIG_REGISTRATIONS, "am_future", ("fake.config_module", "FakeConfig"))
+    monkeypatch.setitem(
+        reg._CUSTOM_CONFIG_REGISTRATIONS,
+        "am_future",
+        ("fake.config_module", "FakeConfig"),
+    )
     monkeypatch.setattr(
-        reg.importlib, "import_module", lambda name: fake_module if name == "fake.config_module" else None
+        reg.importlib,
+        "import_module",
+        lambda name: fake_module if name == "fake.config_module" else None,
     )
 
     assert reg.resolve_custom_config_cls("am_future") is FakeConfig
@@ -236,41 +245,57 @@ def test_resolve_custom_config_cls_returns_none_for_unregistered_model_type():
 def test_custom_config_overrides_default_to_registered_models_except_verified_opt_outs():
     from nemo_automodel._transformers import registry as reg
 
-    assert reg._CUSTOM_CONFIG_OVERRIDES_BUILTIN == set(reg._CUSTOM_CONFIG_REGISTRATIONS) - {"mistral4"}
+    assert reg._CUSTOM_CONFIG_OVERRIDES_BUILTIN == set(
+        reg._CUSTOM_CONFIG_REGISTRATIONS
+    ) - {"mistral4"}
 
 
 def test_resolve_custom_config_cls_defers_to_builtin_only_when_opted_out(monkeypatch):
     from nemo_automodel._transformers import registry as reg
 
-    monkeypatch.setitem(reg._CUSTOM_CONFIG_REGISTRATIONS, "bert", ("fake.config_module", "FakeConfig"))
+    monkeypatch.setitem(
+        reg._CUSTOM_CONFIG_REGISTRATIONS, "bert", ("fake.config_module", "FakeConfig")
+    )
     monkeypatch.setattr(reg, "_CUSTOM_CONFIG_OVERRIDES_BUILTIN", set())
 
     assert reg.resolve_custom_config_cls("bert") is None
 
 
-def test_resolve_custom_config_cls_overrides_transformers_builtin_by_default(monkeypatch):
+def test_resolve_custom_config_cls_overrides_transformers_builtin_by_default(
+    monkeypatch,
+):
     from nemo_automodel._transformers import registry as reg
 
     class FakeConfig:
         pass
 
     fake_module = types.SimpleNamespace(FakeConfig=FakeConfig)
-    monkeypatch.setitem(reg._CUSTOM_CONFIG_REGISTRATIONS, "bert", ("fake.config_module", "FakeConfig"))
+    monkeypatch.setitem(
+        reg._CUSTOM_CONFIG_REGISTRATIONS, "bert", ("fake.config_module", "FakeConfig")
+    )
     monkeypatch.setattr(reg, "_CUSTOM_CONFIG_OVERRIDES_BUILTIN", {"bert"})
     monkeypatch.setattr(
-        reg.importlib, "import_module", lambda name: fake_module if name == "fake.config_module" else None
+        reg.importlib,
+        "import_module",
+        lambda name: fake_module if name == "fake.config_module" else None,
     )
 
     assert reg.resolve_custom_config_cls("bert") is FakeConfig
 
 
-def test_resolve_custom_config_cls_returns_none_when_registered_import_fails(monkeypatch):
+def test_resolve_custom_config_cls_returns_none_when_registered_import_fails(
+    monkeypatch,
+):
     from nemo_automodel._transformers import registry as reg
 
     def raise_import_error(name):
         raise ImportError(name)
 
-    monkeypatch.setitem(reg._CUSTOM_CONFIG_REGISTRATIONS, "am_broken", ("fake.missing_module", "MissingConfig"))
+    monkeypatch.setitem(
+        reg._CUSTOM_CONFIG_REGISTRATIONS,
+        "am_broken",
+        ("fake.missing_module", "MissingConfig"),
+    )
     monkeypatch.setattr(reg, "_CUSTOM_CONFIG_OVERRIDES_BUILTIN", {"am_broken"})
     monkeypatch.setattr(reg.importlib, "import_module", raise_import_error)
 
@@ -289,13 +314,15 @@ def test_registered_config_wins_over_transformers_builtin(model_type):
     from nemo_automodel._transformers import registry as reg
 
     if model_type not in reg._CUSTOM_CONFIG_OVERRIDES_BUILTIN:
-        pytest.skip(f"{model_type} is verified to run on the transformers built-in config")
+        pytest.skip(
+            f"{model_type} is verified to run on the transformers built-in config"
+        )
 
     resolved = reg.resolve_custom_config_cls(model_type)
     assert resolved is not None, f"{model_type} resolves to no config class"
-    assert resolved.__module__.startswith("nemo_automodel"), (
-        f"{model_type} resolves to {resolved.__module__}.{resolved.__name__}, not Automodel's config"
-    )
+    assert resolved.__module__.startswith(
+        "nemo_automodel"
+    ), f"{model_type} resolves to {resolved.__module__}.{resolved.__name__}, not Automodel's config"
 
 
 def test_resolve_custom_model_cls_found():
@@ -419,7 +446,9 @@ def test_kimi_k2_config_loads_without_trust_remote_code(tmp_path):
 
     cfg = AutoConfig.from_pretrained(tmp_path, trust_remote_code=False)
 
-    from transformers.models.deepseek_v3.configuration_deepseek_v3 import DeepseekV3Config
+    from transformers.models.deepseek_v3.configuration_deepseek_v3 import (
+        DeepseekV3Config,
+    )
 
     assert isinstance(cfg, KimiK2Config)
     assert isinstance(cfg, DeepseekV3Config)
@@ -473,6 +502,54 @@ def test_kimi_k25_arch_alias_in_model_arch_mapping():
     assert cls_name == "KimiK25VLForConditionalGeneration"
 
 
+def test_teutonic_ii_config_loads_without_trust_remote_code(tmp_path):
+    """Teutonic-II should resolve to the local MiMo-derived config without remote code."""
+    import json
+
+    from transformers import AutoConfig
+
+    import nemo_automodel._transformers.registry  # noqa: F401
+    from nemo_automodel.components.models.mimo_v25.config import TeutonicIIConfig
+
+    (tmp_path / "config.json").write_text(
+        json.dumps(
+            {
+                "architectures": ["TeutonicIIForCausalLM"],
+                "auto_map": {
+                    "AutoConfig": "configuration_mimo_v2.MiMoV2Config",
+                    "AutoModel": "modeling_mimo_v2.MiMoV2Model",
+                    "AutoModelForCausalLM": "modeling_mimo_v2.MiMoV2ForCausalLM",
+                },
+                "hidden_size": 64,
+                "model_type": "teutonic_ii",
+                "n_routed_experts": 8,
+                "n_shared_experts": 1,
+                "num_attention_heads": 8,
+                "num_key_value_heads": 8,
+                "num_hidden_layers": 2,
+                "vocab_size": 256,
+            }
+        )
+    )
+
+    cfg = AutoConfig.from_pretrained(tmp_path, trust_remote_code=False)
+
+    assert isinstance(cfg, TeutonicIIConfig)
+    assert cfg.model_type == "teutonic_ii"
+    assert cfg.architectures == ["TeutonicIIForCausalLM"]
+    assert cfg.n_shared_experts == 1
+
+
+def test_teutonic_ii_arch_alias_in_model_arch_mapping():
+    """Teutonic-II checkpoints should resolve to the in-tree MiMo-derived model implementation."""
+    from nemo_automodel._transformers.registry import MODEL_ARCH_MAPPING
+
+    assert "TeutonicIIForCausalLM" in MODEL_ARCH_MAPPING
+    module_path, cls_name = MODEL_ARCH_MAPPING["TeutonicIIForCausalLM"]
+    assert module_path == "nemo_automodel.components.models.mimo_v25.model"
+    assert cls_name == "TeutonicIIForCausalLM"
+
+
 def test_deepseek_v4_registered_in_arch_mapping():
     """DeepseekV4ForCausalLM must be registered in MODEL_ARCH_MAPPING."""
     from nemo_automodel._transformers.registry import MODEL_ARCH_MAPPING
@@ -511,7 +588,12 @@ def test_all_model_folders_registered_in_auto_map():
 
     from nemo_automodel._transformers.registry import MODEL_ARCH_MAPPING
 
-    models_root = pathlib.Path(__file__).resolve().parents[3] / "nemo_automodel" / "components" / "models"
+    models_root = (
+        pathlib.Path(__file__).resolve().parents[3]
+        / "nemo_automodel"
+        / "components"
+        / "models"
+    )
 
     # Collect the set of module paths referenced by the auto_map
     registered_module_paths = {v[0] for v in MODEL_ARCH_MAPPING.values()}

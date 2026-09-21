@@ -23,7 +23,10 @@ from typing import Any, Optional, Union
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from transformers.masking_utils import create_causal_mask, create_sliding_window_causal_mask
+from transformers.masking_utils import (
+    create_causal_mask,
+    create_sliding_window_causal_mask,
+)
 from transformers.modeling_outputs import CausalLMOutputWithPast
 from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS, dynamic_rope_update
 
@@ -32,7 +35,9 @@ from nemo_automodel.components.models.common import (
     initialize_linear_module,
     initialize_rms_norm_module,
 )
-from nemo_automodel.components.models.common.hf_checkpointing_mixin import HFCheckpointingMixin
+from nemo_automodel.components.models.common.hf_checkpointing_mixin import (
+    HFCheckpointingMixin,
+)
 from nemo_automodel.components.models.common.tie_word_embeddings import (
     TieSupport,
     reject_unsupported_tie_word_embeddings,
@@ -42,14 +47,19 @@ from nemo_automodel.components.models.common.utils import (
     cast_model_to_dtype,
     compute_lm_head_logits,
 )
-from nemo_automodel.components.models.mimo_v25.config import MiMoV2Config
+from nemo_automodel.components.models.mimo_v25.config import (
+    MiMoV2Config,
+    TeutonicIIConfig,
+)
 from nemo_automodel.components.moe.config import MoEConfig
 from nemo_automodel.components.moe.fsdp_mixin import MoEFSDPSyncMixin
 from nemo_automodel.components.moe.layers import MLP, MoE
 from nemo_automodel.shared.utils import dtype_from_str as get_dtype
 
 
-def _convert_bool_4d_mask_to_additive(mask: torch.Tensor, dtype: torch.dtype) -> torch.Tensor:
+def _convert_bool_4d_mask_to_additive(
+    mask: torch.Tensor, dtype: torch.dtype
+) -> torch.Tensor:
     if mask.ndim != 4 or mask.dtype != torch.bool:
         return mask
     additive = torch.zeros(mask.shape, dtype=dtype, device=mask.device)
@@ -69,10 +79,19 @@ def _fallback_additive_mask(
     masked = idx.unsqueeze(0) > idx.unsqueeze(1)
     if sliding_window is not None and sliding_window > 0:
         masked = masked | ((idx.unsqueeze(1) - idx.unsqueeze(0)) >= sliding_window)
-    additive = torch.zeros((seq_len, seq_len), dtype=dtype, device=device).masked_fill(masked, min_val)
-    additive = additive.unsqueeze(0).unsqueeze(0).expand(batch_size, 1, seq_len, seq_len).contiguous()
+    additive = torch.zeros((seq_len, seq_len), dtype=dtype, device=device).masked_fill(
+        masked, min_val
+    )
+    additive = (
+        additive.unsqueeze(0)
+        .unsqueeze(0)
+        .expand(batch_size, 1, seq_len, seq_len)
+        .contiguous()
+    )
     if attention_mask is not None and attention_mask.ndim == 2:
-        pad = (1.0 - attention_mask.to(dtype=dtype, device=device)).unsqueeze(1).unsqueeze(2) * min_val
+        pad = (1.0 - attention_mask.to(dtype=dtype, device=device)).unsqueeze(
+            1
+        ).unsqueeze(2) * min_val
         additive = additive + pad
     return additive
 
@@ -88,7 +107,9 @@ def _ensure_additive_mask(
     sliding_window: int | None,
 ) -> torch.Tensor:
     if mask is None or not isinstance(mask, torch.Tensor):
-        return _fallback_additive_mask(batch_size, seq_len, dtype, device, attention_mask, sliding_window)
+        return _fallback_additive_mask(
+            batch_size, seq_len, dtype, device, attention_mask, sliding_window
+        )
     return _convert_bool_4d_mask_to_additive(mask, dtype)
 
 
@@ -97,7 +118,11 @@ def _derive_padding_mask(attention_mask: torch.Tensor) -> torch.Tensor:
         return attention_mask == 0
     if attention_mask.ndim == 4:
         diagonal = torch.diagonal(attention_mask[:, 0], dim1=-2, dim2=-1)
-        return diagonal.logical_not() if attention_mask.dtype == torch.bool else diagonal != 0
+        return (
+            diagonal.logical_not()
+            if attention_mask.dtype == torch.bool
+            else diagonal != 0
+        )
     return attention_mask.bool().logical_not()
 
 
@@ -124,7 +149,9 @@ def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
     batch, num_key_value_heads, slen, head_dim = hidden_states.shape
     if n_rep == 1:
         return hidden_states
-    hidden_states = hidden_states[:, :, None, :, :].expand(batch, num_key_value_heads, n_rep, slen, head_dim)
+    hidden_states = hidden_states[:, :, None, :, :].expand(
+        batch, num_key_value_heads, n_rep, slen, head_dim
+    )
     return hidden_states.reshape(batch, num_key_value_heads * n_rep, slen, head_dim)
 
 
@@ -146,8 +173,12 @@ def eager_attention_forward(
         attn_weights = attn_weights + attention_mask[:, :, :, : key_states.shape[-2]]
 
     if sinks is not None:
-        sink_bias = module.attention_sink_bias.reshape(1, -1, 1, 1).expand(query.shape[0], -1, query.shape[-2], -1)
-        attn_weights = torch.cat([attn_weights, sink_bias.to(attn_weights.dtype)], dim=-1)
+        sink_bias = module.attention_sink_bias.reshape(1, -1, 1, 1).expand(
+            query.shape[0], -1, query.shape[-2], -1
+        )
+        attn_weights = torch.cat(
+            [attn_weights, sink_bias.to(attn_weights.dtype)], dim=-1
+        )
 
     attn_weights = attn_weights - attn_weights.max(dim=-1, keepdim=True).values
     probs = F.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query.dtype)
@@ -174,7 +205,9 @@ class MiMoV2Attention(nn.Module):
     ):
         super().__init__()
         if projection_layout not in {"split", "fused_qkv"}:
-            raise ValueError(f"Unsupported MiMoV2 attention projection layout: {projection_layout}")
+            raise ValueError(
+                f"Unsupported MiMoV2 attention projection layout: {projection_layout}"
+            )
 
         self.layer_idx = layer_idx
         self.is_swa = is_swa
@@ -185,17 +218,25 @@ class MiMoV2Attention(nn.Module):
         default_v_head_dim = getattr(config, "v_head_dim", default_head_dim)
 
         if is_swa:
-            self.head_dim = getattr(config, "swa_head_dim", getattr(config, "head_dim", default_head_dim))
+            self.head_dim = getattr(
+                config, "swa_head_dim", getattr(config, "head_dim", default_head_dim)
+            )
             self.v_head_dim = getattr(config, "swa_v_head_dim", default_v_head_dim)
-            self.num_attention_heads = getattr(config, "swa_num_attention_heads", config.num_attention_heads)
-            self.num_key_value_heads = getattr(config, "swa_num_key_value_heads", config.num_key_value_heads)
+            self.num_attention_heads = getattr(
+                config, "swa_num_attention_heads", config.num_attention_heads
+            )
+            self.num_key_value_heads = getattr(
+                config, "swa_num_key_value_heads", config.num_key_value_heads
+            )
         else:
             self.head_dim = getattr(config, "head_dim", default_head_dim)
             self.v_head_dim = getattr(config, "v_head_dim", self.head_dim)
             self.num_attention_heads = config.num_attention_heads
             self.num_key_value_heads = config.num_key_value_heads
 
-        self.rope_dim = int(self.head_dim * getattr(config, "partial_rotary_factor", 1.0))
+        self.rope_dim = int(
+            self.head_dim * getattr(config, "partial_rotary_factor", 1.0)
+        )
         if self.rope_dim % 2 != 0:
             raise ValueError(
                 f"MiMoV2 rotary dimension must be even, got {self.rope_dim} from "
@@ -205,7 +246,9 @@ class MiMoV2Attention(nn.Module):
         self.num_key_value_groups = self.num_attention_heads // self.num_key_value_heads
         self.attention_dropout = getattr(config, "attention_dropout", 0.0)
         self.scaling = self.head_dim**-0.5
-        self.sliding_window = getattr(config, "sliding_window", None) if is_swa else None
+        self.sliding_window = (
+            getattr(config, "sliding_window", None) if is_swa else None
+        )
 
         self.q_size = self.num_attention_heads * self.head_dim
         self.k_size = self.num_key_value_heads * self.head_dim
@@ -233,16 +276,32 @@ class MiMoV2Attention(nn.Module):
             )
         else:
             self.q_proj = initialize_linear_module(
-                backend.linear, config.hidden_size, self.q_size, bias=attention_bias, dtype=dtype
+                backend.linear,
+                config.hidden_size,
+                self.q_size,
+                bias=attention_bias,
+                dtype=dtype,
             )
             self.k_proj = initialize_linear_module(
-                backend.linear, config.hidden_size, self.k_size, bias=attention_bias, dtype=dtype
+                backend.linear,
+                config.hidden_size,
+                self.k_size,
+                bias=attention_bias,
+                dtype=dtype,
             )
             self.v_proj = initialize_linear_module(
-                backend.linear, config.hidden_size, self.v_size, bias=attention_bias, dtype=dtype
+                backend.linear,
+                config.hidden_size,
+                self.v_size,
+                bias=attention_bias,
+                dtype=dtype,
             )
         self.o_proj = initialize_linear_module(
-            backend.linear, self.o_hidden_size, config.hidden_size, bias=False, dtype=dtype
+            backend.linear,
+            self.o_hidden_size,
+            config.hidden_size,
+            bias=False,
+            dtype=dtype,
         )
 
     def _forward_attention(
@@ -258,8 +317,12 @@ class MiMoV2Attention(nn.Module):
             value_states = value_states * self.v_scale
 
         cos, sin = position_embeddings
-        query_rope, query_nope = query_states.split([self.rope_dim, self.head_dim - self.rope_dim], dim=-1)
-        key_rope, key_nope = key_states.split([self.rope_dim, self.head_dim - self.rope_dim], dim=-1)
+        query_rope, query_nope = query_states.split(
+            [self.rope_dim, self.head_dim - self.rope_dim], dim=-1
+        )
+        key_rope, key_nope = key_states.split(
+            [self.rope_dim, self.head_dim - self.rope_dim], dim=-1
+        )
         query_rope, key_rope = apply_rotary_pos_emb(query_rope, key_rope, cos, sin)
         query_states = torch.cat([query_rope, query_nope], dim=-1)
         key_states = torch.cat([key_rope, key_nope], dim=-1)
@@ -289,27 +352,44 @@ class MiMoV2Attention(nn.Module):
 
         if self.projection_layout == "fused_qkv":
             qkv = self.qkv_proj(hidden_states)
-            query_states, key_states, value_states = qkv.split([self.q_size, self.k_size, self.v_size], dim=-1)
+            query_states, key_states, value_states = qkv.split(
+                [self.q_size, self.k_size, self.v_size], dim=-1
+            )
         else:
             query_states = self.q_proj(hidden_states)
             key_states = self.k_proj(hidden_states)
             value_states = self.v_proj(hidden_states)
 
-        query_states = query_states.view(*input_shape, self.num_attention_heads, self.head_dim).transpose(1, 2)
-        key_states = key_states.view(*input_shape, self.num_key_value_heads, self.head_dim).transpose(1, 2)
-        value_states = value_states.view(*input_shape, self.num_key_value_heads, self.v_head_dim).transpose(1, 2)
+        query_states = query_states.view(
+            *input_shape, self.num_attention_heads, self.head_dim
+        ).transpose(1, 2)
+        key_states = key_states.view(
+            *input_shape, self.num_key_value_heads, self.head_dim
+        ).transpose(1, 2)
+        value_states = value_states.view(
+            *input_shape, self.num_key_value_heads, self.v_head_dim
+        ).transpose(1, 2)
         return self._forward_attention(
-            query_states, key_states, value_states, input_shape, position_embeddings, attention_mask
+            query_states,
+            key_states,
+            value_states,
+            input_shape,
+            position_embeddings,
+            attention_mask,
         )
 
 
 class MiMoV2RotaryEmbedding(nn.Module):
     inv_freq: torch.Tensor
 
-    def __init__(self, config: MiMoV2Config, is_swa: bool, device: Optional[torch.device] = None):
+    def __init__(
+        self, config: MiMoV2Config, is_swa: bool, device: Optional[torch.device] = None
+    ):
         super().__init__()
         self.rope_type = (
-            config.rope_scaling.get("rope_type", config.rope_scaling.get("type", "default"))
+            config.rope_scaling.get(
+                "rope_type", config.rope_scaling.get("type", "default")
+            )
             if hasattr(config, "rope_scaling") and isinstance(config.rope_scaling, dict)
             else "default"
         )
@@ -317,15 +397,23 @@ class MiMoV2RotaryEmbedding(nn.Module):
         self.original_max_seq_len = config.max_position_embeddings
 
         self.config = copy(config)
-        self.config.rope_parameters = copy(getattr(config, "rope_parameters", None) or {})
+        self.config.rope_parameters = copy(
+            getattr(config, "rope_parameters", None) or {}
+        )
         if is_swa:
-            self.config.rope_theta = getattr(config, "swa_rope_theta", config.rope_theta)
-            self.config.head_dim = getattr(config, "swa_head_dim", getattr(config, "head_dim", None))
+            self.config.rope_theta = getattr(
+                config, "swa_rope_theta", config.rope_theta
+            )
+            self.config.head_dim = getattr(
+                config, "swa_head_dim", getattr(config, "head_dim", None)
+            )
             if self.config.rope_parameters:
                 self.config.rope_parameters["rope_theta"] = self.config.rope_theta
 
         self.rope_init_fn = (
-            self.compute_default_rope_parameters if self.rope_type == "default" else ROPE_INIT_FUNCTIONS[self.rope_type]
+            self.compute_default_rope_parameters
+            if self.rope_type == "default"
+            else ROPE_INIT_FUNCTIONS[self.rope_type]
         )
         inv_freq, self.attention_scaling = self.rope_init_fn(self.config, device)
         self.register_buffer("inv_freq", inv_freq, persistent=False)
@@ -339,10 +427,17 @@ class MiMoV2RotaryEmbedding(nn.Module):
         layer_type: Optional[str] = None,
     ) -> tuple[torch.Tensor, float]:
         config.standardize_rope_params()
-        rope_parameters = config.rope_parameters[layer_type] if layer_type is not None else config.rope_parameters
+        rope_parameters = (
+            config.rope_parameters[layer_type]
+            if layer_type is not None
+            else config.rope_parameters
+        )
         base = rope_parameters["rope_theta"]
         partial_rotary_factor = rope_parameters.get("partial_rotary_factor", 1.0)
-        head_dim = getattr(config, "head_dim", None) or config.hidden_size // config.num_attention_heads
+        head_dim = (
+            getattr(config, "head_dim", None)
+            or config.hidden_size // config.num_attention_heads
+        )
         dim = int(head_dim * partial_rotary_factor)
         if dim % 2 != 0:
             raise ValueError(
@@ -350,18 +445,37 @@ class MiMoV2RotaryEmbedding(nn.Module):
                 f"head_dim={head_dim} and partial_rotary_factor={partial_rotary_factor}"
             )
         inv_freq = 1.0 / (
-            base ** (torch.arange(0, dim, 2, dtype=torch.int64).to(device=device, dtype=torch.float) / dim)
+            base
+            ** (
+                torch.arange(0, dim, 2, dtype=torch.int64).to(
+                    device=device, dtype=torch.float
+                )
+                / dim
+            )
         )
         return inv_freq, 1.0
 
     @torch.no_grad()
     @dynamic_rope_update
-    def forward(self, x: torch.Tensor, position_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        inv_freq_expanded = self.inv_freq[None, :, None].float().expand(position_ids.shape[0], -1, 1).to(x.device)
+    def forward(
+        self, x: torch.Tensor, position_ids: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        inv_freq_expanded = (
+            self.inv_freq[None, :, None]
+            .float()
+            .expand(position_ids.shape[0], -1, 1)
+            .to(x.device)
+        )
         position_ids_expanded = position_ids[:, None, :].float()
-        device_type = x.device.type if isinstance(x.device.type, str) and x.device.type != "mps" else "cpu"
+        device_type = (
+            x.device.type
+            if isinstance(x.device.type, str) and x.device.type != "mps"
+            else "cpu"
+        )
         with torch.autocast(device_type=device_type, enabled=False):
-            freqs = (inv_freq_expanded.float() @ position_ids_expanded.float()).transpose(1, 2)
+            freqs = (
+                inv_freq_expanded.float() @ position_ids_expanded.float()
+            ).transpose(1, 2)
             emb = torch.cat((freqs, freqs), dim=-1)
             cos = emb.cos() * self.attention_scaling
             sin = emb.sin() * self.attention_scaling
@@ -388,17 +502,31 @@ class MiMoV2DecoderLayer(nn.Module):
             backend=backend,
             dtype=dtype,
         )
-        is_moe_layer = getattr(config, "n_routed_experts", None) is not None and config.moe_layer_freq[layer_idx]
+        is_moe_layer = (
+            getattr(config, "n_routed_experts", None) is not None
+            and config.moe_layer_freq[layer_idx]
+        )
         self.mlp = (
             MoE(moe_config, backend)
             if is_moe_layer
-            else MLP(config.hidden_size, config.intermediate_size, backend.linear, dtype=dtype)
+            else MLP(
+                config.hidden_size,
+                config.intermediate_size,
+                backend.linear,
+                dtype=dtype,
+            )
         )
         self.input_layernorm = initialize_rms_norm_module(
-            backend.rms_norm, config.hidden_size, eps=config.layernorm_epsilon, dtype=dtype
+            backend.rms_norm,
+            config.hidden_size,
+            eps=config.layernorm_epsilon,
+            dtype=dtype,
         )
         self.post_attention_layernorm = initialize_rms_norm_module(
-            backend.rms_norm, config.hidden_size, eps=config.layernorm_epsilon, dtype=dtype
+            backend.rms_norm,
+            config.hidden_size,
+            eps=config.layernorm_epsilon,
+            dtype=dtype,
         )
 
     def forward(
@@ -426,7 +554,9 @@ class MiMoV2DecoderLayer(nn.Module):
 
 
 class MiMoV2Model(nn.Module):
-    def __init__(self, config: MiMoV2Config, moe_config: MoEConfig, backend: BackendConfig):
+    def __init__(
+        self, config: MiMoV2Config, moe_config: MoEConfig, backend: BackendConfig
+    ):
         super().__init__()
         self.config = config
         self.backend = backend
@@ -435,12 +565,20 @@ class MiMoV2Model(nn.Module):
             backend.gate_precision = torch.float32
 
         dtype = get_dtype(config.torch_dtype, torch.bfloat16)
-        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, dtype=dtype)
+        self.embed_tokens = nn.Embedding(
+            config.vocab_size, config.hidden_size, dtype=dtype
+        )
         self.layers = nn.ModuleDict(
-            {str(i): MiMoV2DecoderLayer(config, i, moe_config, backend) for i in range(config.num_hidden_layers)}
+            {
+                str(i): MiMoV2DecoderLayer(config, i, moe_config, backend)
+                for i in range(config.num_hidden_layers)
+            }
         )
         self.norm = initialize_rms_norm_module(
-            backend.rms_norm, config.hidden_size, eps=config.layernorm_epsilon, dtype=dtype
+            backend.rms_norm,
+            config.hidden_size,
+            eps=config.layernorm_epsilon,
+            dtype=dtype,
         )
         self.rotary_emb = MiMoV2RotaryEmbedding(config=config, is_swa=False)
         self.swa_rotary_emb = MiMoV2RotaryEmbedding(config=config, is_swa=True)
@@ -469,7 +607,10 @@ class MiMoV2Model(nn.Module):
                     sliding_window=None,
                 ),
                 "sliding_attention": _ensure_additive_mask(
-                    attention_mask.get("sliding_attention", attention_mask.get("sliding_window_attention")),
+                    attention_mask.get(
+                        "sliding_attention",
+                        attention_mask.get("sliding_window_attention"),
+                    ),
                     batch_size=batch_size,
                     seq_len=seq_len,
                     dtype=dtype,
@@ -499,7 +640,11 @@ class MiMoV2Model(nn.Module):
                 sliding_window=None,
             ),
             "sliding_attention": _ensure_additive_mask(
-                create_sliding_window_causal_mask(**mask_kwargs) if self.has_sliding_layers else None,
+                (
+                    create_sliding_window_causal_mask(**mask_kwargs)
+                    if self.has_sliding_layers
+                    else None
+                ),
                 batch_size=batch_size,
                 seq_len=seq_len,
                 dtype=dtype,
@@ -527,7 +672,9 @@ class MiMoV2Model(nn.Module):
             inputs_embeds = self.embed_tokens(input_ids)
 
         if cache_position is None:
-            cache_position = torch.arange(0, inputs_embeds.shape[1], device=inputs_embeds.device)
+            cache_position = torch.arange(
+                0, inputs_embeds.shape[1], device=inputs_embeds.device
+            )
         if position_ids is None:
             position_ids = cache_position.unsqueeze(0)
 
@@ -547,7 +694,9 @@ class MiMoV2Model(nn.Module):
 
         for layer in self.layers.values():
             layer_position_embeddings = (
-                swa_position_embeddings if layer.attention_type == "sliding_attention" else position_embeddings
+                swa_position_embeddings
+                if layer.attention_type == "sliding_attention"
+                else position_embeddings
             )
             hidden_states = layer(
                 hidden_states,
@@ -560,7 +709,9 @@ class MiMoV2Model(nn.Module):
 
     @torch.no_grad()
     def init_weights(self, buffer_device: Optional[torch.device] = None) -> None:
-        buffer_device = buffer_device or torch.device(f"cuda:{torch.cuda.current_device()}")
+        buffer_device = buffer_device or torch.device(
+            f"cuda:{torch.cuda.current_device()}"
+        )
         with buffer_device:
             nn.init.normal_(self.embed_tokens.weight)
             self.norm.reset_parameters()
@@ -568,11 +719,19 @@ class MiMoV2Model(nn.Module):
             layer.init_weights(buffer_device)
 
 
+class TeutonicIIModel(MiMoV2Model):
+    """Teutonic-II reuses the MiMo v2 decoder implementation."""
+
+
 class MiMoV2ForCausalLM(HFCheckpointingMixin, nn.Module, MoEFSDPSyncMixin):
     """NeMo AutoModel causal LM wrapper for MiMo-V2.5-Pro."""
 
     tie_word_embeddings_support: TieSupport = TieSupport.UNTIED_ONLY
-    _keep_in_fp32_modules_strict = ["mlp.gate.e_score_correction_bias", "attention_sink_bias"]
+    _keep_in_fp32_modules_strict = [
+        "mlp.gate.e_score_correction_bias",
+        "attention_sink_bias",
+        "rotary_emb",
+    ]
     _pp_keep_self_forward = True
     _skip_init_weights_on_load = True
 
@@ -630,8 +789,16 @@ class MiMoV2ForCausalLM(HFCheckpointingMixin, nn.Module, MoEFSDPSyncMixin):
             n_limited_groups=config.topk_group,
             train_gate=True,
             gate_bias_update_factor=0.0,
-            score_func="sigmoid_with_bias" if config.scoring_func == "sigmoid" else config.scoring_func,
-            route_scale=config.routed_scaling_factor if config.routed_scaling_factor is not None else 1.0,
+            score_func=(
+                "sigmoid_with_bias"
+                if config.scoring_func == "sigmoid"
+                else config.scoring_func
+            ),
+            route_scale=(
+                config.routed_scaling_factor
+                if config.routed_scaling_factor is not None
+                else 1.0
+            ),
             aux_loss_coeff=0.0,
             norm_topk_prob=config.norm_topk_prob,
             router_bias=False,
@@ -655,11 +822,17 @@ class MiMoV2ForCausalLM(HFCheckpointingMixin, nn.Module, MoEFSDPSyncMixin):
         )
 
         if self.backend.enable_hf_state_dict_adapter:
-            from nemo_automodel.components.models.mimo_v25.state_dict_adapter import MiMoV2StateDictAdapter
+            from nemo_automodel.components.models.mimo_v25.state_dict_adapter import (
+                MiMoV2StateDictAdapter,
+            )
 
             self.state_dict_adapter = MiMoV2StateDictAdapter(
                 self.config,
-                self.model.moe_config if hasattr(self.model, "moe_config") else resolved_moe_config,
+                (
+                    self.model.moe_config
+                    if hasattr(self.model, "moe_config")
+                    else resolved_moe_config
+                ),
                 self.backend,
                 dtype=dtype,
             )
@@ -701,7 +874,12 @@ class MiMoV2ForCausalLM(HFCheckpointingMixin, nn.Module, MoEFSDPSyncMixin):
             padding_mask=padding_mask,
             **kwargs,
         )
-        return compute_lm_head_logits(self.lm_head, hidden, logits_to_keep, output_hidden_states=output_hidden_states)
+        return compute_lm_head_logits(
+            self.lm_head,
+            hidden,
+            logits_to_keep,
+            output_hidden_states=output_hidden_states,
+        )
 
     def customize_pipeline_stage_modules(
         self,
@@ -726,7 +904,9 @@ class MiMoV2ForCausalLM(HFCheckpointingMixin, nn.Module, MoEFSDPSyncMixin):
         buffer_device: Optional[torch.device] = None,
         dtype: torch.dtype = torch.bfloat16,
     ) -> None:
-        buffer_device = buffer_device or torch.device(f"cuda:{torch.cuda.current_device()}")
+        buffer_device = buffer_device or torch.device(
+            f"cuda:{torch.cuda.current_device()}"
+        )
         with buffer_device:
             self.model.init_weights(buffer_device)
             final_out_std = self.config.hidden_size**-0.5
@@ -743,4 +923,26 @@ class MiMoV2ForCausalLM(HFCheckpointingMixin, nn.Module, MoEFSDPSyncMixin):
         cast_model_to_dtype(self, dtype)
 
 
+class TeutonicIIForCausalLM(MiMoV2ForCausalLM):
+    """Teutonic-II wrapper that shares MiMo v2 weights and execution semantics."""
+
+    @classmethod
+    def from_pretrained(
+        cls,
+        pretrained_model_name_or_path: str,
+        *model_args,
+        **kwargs,
+    ) -> "TeutonicIIForCausalLM":
+        config = TeutonicIIConfig.from_pretrained(pretrained_model_name_or_path)
+        return cls.from_config(config, *model_args, **kwargs)
+
+
 ModelClass = MiMoV2ForCausalLM
+
+__all__ = [
+    "MiMoV2ForCausalLM",
+    "MiMoV2Model",
+    "TeutonicIIForCausalLM",
+    "TeutonicIIModel",
+    "ModelClass",
+]

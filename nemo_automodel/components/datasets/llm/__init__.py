@@ -14,13 +14,18 @@
 
 from .agent_chat import make_agent_chat_dataset  # noqa: F401
 from .chat_dataset import ChatDataset  # noqa: F401
-from .column_mapped_text_instruction_dataset import ColumnMappedTextInstructionDataset  # noqa: F401
-from .column_mapped_text_instruction_iterable_dataset import ColumnMappedTextInstructionIterableDataset  # noqa: F401
+from .column_mapped_text_instruction_dataset import (
+    ColumnMappedTextInstructionDataset,
+)  # noqa: F401
+from .column_mapped_text_instruction_iterable_dataset import (
+    ColumnMappedTextInstructionIterableDataset,
+)  # noqa: F401
 from .delta_lake_dataset import (  # noqa: F401
     DeltaLakeDataset,
     is_delta_lake_path,
 )
 from .nanogpt_dataset import NanogptDataset  # noqa: F401
+from .npy_token_dataset import NpyTokenDataset  # noqa: F401
 from .neat_packing import neat_pack_dataset  # noqa: F401
 from .retrieval_collator import (  # noqa: F401
     BiEncoderCollator,
@@ -29,13 +34,16 @@ from .retrieval_collator import (  # noqa: F401
     make_vision_collator_from_processor_method,
 )
 from .retrieval_dataset import make_retrieval_dataset  # noqa: F401
-from .retrieval_dataset_normalized import make_normalized_retrieval_dataset  # noqa: F401
+from .retrieval_dataset_normalized import (
+    make_normalized_retrieval_dataset,
+)  # noqa: F401
 from .retrieval_distill_collator import BiEncoderDistillCollator  # noqa: F401
 from .squad import make_squad_dataset  # noqa: F401
 from .xlam import make_xlam_dataset  # noqa: F401
 
 __all__ = [
     "NanogptDataset",
+    "NpyTokenDataset",
     "make_squad_dataset",
     "make_retrieval_dataset",
     "make_normalized_retrieval_dataset",

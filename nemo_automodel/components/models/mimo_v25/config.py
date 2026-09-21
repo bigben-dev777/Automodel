@@ -86,7 +86,9 @@ class MiMoV2Config(PretrainedConfig):
         if attention_projection_layout is None:
             attention_projection_layout = "split"
         if attention_projection_layout not in _MIMOV2_ATTENTION_PROJECTION_LAYOUTS:
-            raise ValueError(f"Unsupported MiMoV2 attention projection layout: {attention_projection_layout}")
+            raise ValueError(
+                f"Unsupported MiMoV2 attention projection layout: {attention_projection_layout}"
+            )
 
         self.attention_projection_layout = attention_projection_layout
 
@@ -100,7 +102,9 @@ class MiMoV2Config(PretrainedConfig):
         if num_key_value_heads is None:
             num_key_value_heads = num_attention_heads
         if num_attention_heads % num_key_value_heads != 0:
-            raise ValueError("num_attention_heads must be divisible by num_key_value_heads")
+            raise ValueError(
+                "num_attention_heads must be divisible by num_key_value_heads"
+            )
 
         self.num_key_value_heads = num_key_value_heads
         self.hidden_act = hidden_act
@@ -114,30 +118,47 @@ class MiMoV2Config(PretrainedConfig):
         self.attention_bias = attention_bias
         self.attention_value_scale = attention_value_scale
 
-        self.head_dim = head_dim if head_dim is not None else hidden_size // num_attention_heads
+        self.head_dim = (
+            head_dim if head_dim is not None else hidden_size // num_attention_heads
+        )
         self.v_head_dim = v_head_dim if v_head_dim is not None else self.head_dim
         self.swa_num_attention_heads = (
-            swa_num_attention_heads if swa_num_attention_heads is not None else num_attention_heads
+            swa_num_attention_heads
+            if swa_num_attention_heads is not None
+            else num_attention_heads
         )
         self.swa_num_key_value_heads = (
-            swa_num_key_value_heads if swa_num_key_value_heads is not None else num_key_value_heads
+            swa_num_key_value_heads
+            if swa_num_key_value_heads is not None
+            else num_key_value_heads
         )
         if self.swa_num_attention_heads % self.swa_num_key_value_heads != 0:
-            raise ValueError("swa_num_attention_heads must be divisible by swa_num_key_value_heads")
+            raise ValueError(
+                "swa_num_attention_heads must be divisible by swa_num_key_value_heads"
+            )
         self.swa_head_dim = swa_head_dim if swa_head_dim is not None else self.head_dim
-        self.swa_v_head_dim = swa_v_head_dim if swa_v_head_dim is not None else self.swa_head_dim
-        self.swa_rope_theta = swa_rope_theta if swa_rope_theta is not None else rope_theta
+        self.swa_v_head_dim = (
+            swa_v_head_dim if swa_v_head_dim is not None else self.swa_head_dim
+        )
+        self.swa_rope_theta = (
+            swa_rope_theta if swa_rope_theta is not None else rope_theta
+        )
 
         if sliding_window is None:
             sliding_window = sliding_window_size
         self.sliding_window = sliding_window
-        self.sliding_window_size = sliding_window_size if sliding_window_size is not None else sliding_window
+        self.sliding_window_size = (
+            sliding_window_size if sliding_window_size is not None else sliding_window
+        )
         self.attention_chunk_size = attention_chunk_size
         self.add_full_attention_sink_bias = add_full_attention_sink_bias
         self.add_swa_attention_sink_bias = add_swa_attention_sink_bias
 
         if hybrid_block_size is not None and hybrid_layer_pattern is None:
-            hybrid_layer_pattern = [0 if ((i + 1) % hybrid_block_size == 0) else 1 for i in range(num_hidden_layers)]
+            hybrid_layer_pattern = [
+                0 if ((i + 1) % hybrid_block_size == 0) else 1
+                for i in range(num_hidden_layers)
+            ]
         elif hybrid_layer_pattern is None:
             hybrid_layer_pattern = [0] * num_hidden_layers
         if len(hybrid_layer_pattern) != num_hidden_layers:
@@ -149,7 +170,11 @@ class MiMoV2Config(PretrainedConfig):
 
         self.n_routed_experts = n_routed_experts
         self.n_shared_experts = n_shared_experts
-        self.moe_intermediate_size = moe_intermediate_size if moe_intermediate_size is not None else intermediate_size
+        self.moe_intermediate_size = (
+            moe_intermediate_size
+            if moe_intermediate_size is not None
+            else intermediate_size
+        )
         self.num_experts_per_tok = num_experts_per_tok
         self.routed_scaling_factor = routed_scaling_factor
         self.scoring_func = scoring_func
@@ -158,7 +183,10 @@ class MiMoV2Config(PretrainedConfig):
         self.topk_group = topk_group
         self.norm_topk_prob = norm_topk_prob
         if isinstance(moe_layer_freq, int):
-            moe_layer_freq = [moe_layer_freq > 0 and i % moe_layer_freq == 0 for i in range(num_hidden_layers)]
+            moe_layer_freq = [
+                moe_layer_freq > 0 and i % moe_layer_freq == 0
+                for i in range(num_hidden_layers)
+            ]
         elif moe_layer_freq is None:
             moe_layer_freq = [False] * num_hidden_layers
         if len(moe_layer_freq) != num_hidden_layers:
@@ -172,3 +200,49 @@ class MiMoV2Config(PretrainedConfig):
         # Assign after super().__init__() so our string value wins over any
         # dtype conversion done by PretrainedConfig.
         self.torch_dtype = torch_dtype
+
+
+class TeutonicIIConfig(MiMoV2Config):
+    """Configuration alias for Teutonic-II checkpoints built on MiMo v2."""
+
+    model_type = "teutonic_ii"
+
+    def __init__(self, *args, **kwargs):
+        attention_projection_layout = kwargs.get("attention_projection_layout", "split")
+        n_routed_experts = kwargs.get("n_routed_experts")
+        n_shared_experts = kwargs.get("n_shared_experts")
+        moe_intermediate_size = kwargs.get("moe_intermediate_size")
+        num_experts_per_tok = kwargs.get("num_experts_per_tok")
+        routed_scaling_factor = kwargs.get("routed_scaling_factor")
+        scoring_func = kwargs.get("scoring_func", "sigmoid")
+        topk_method = kwargs.get("topk_method", "noaux_tc")
+        n_group = kwargs.get("n_group")
+        topk_group = kwargs.get("topk_group")
+        norm_topk_prob = kwargs.get("norm_topk_prob", True)
+        moe_layer_freq = kwargs.get("moe_layer_freq")
+
+        super().__init__(*args, **kwargs)
+
+        self.attention_projection_layout = attention_projection_layout
+        self.n_routed_experts = n_routed_experts
+        self.n_shared_experts = n_shared_experts
+        self.moe_intermediate_size = (
+            moe_intermediate_size
+            if moe_intermediate_size is not None
+            else self.intermediate_size
+        )
+        self.num_experts_per_tok = num_experts_per_tok
+        self.routed_scaling_factor = routed_scaling_factor
+        self.scoring_func = scoring_func
+        self.topk_method = topk_method
+        self.n_group = n_group
+        self.topk_group = topk_group
+        self.norm_topk_prob = norm_topk_prob
+        self.moe_layer_freq = (
+            moe_layer_freq
+            if moe_layer_freq is not None
+            else getattr(self, "moe_layer_freq", None)
+        )
+
+
+__all__ = ["MiMoV2Config", "TeutonicIIConfig"]
