@@ -213,14 +213,21 @@ class MiMoV2Attention(nn.Module):
         self.o_hidden_size = self.num_attention_heads * self.v_head_dim
         self.v_scale = getattr(config, "attention_value_scale", None)
 
-        self.attention_sink_bias = (
-            nn.Parameter(torch.empty(self.num_attention_heads), requires_grad=False)
-            if (
-                (getattr(config, "add_full_attention_sink_bias", False) and not is_swa)
-                or (getattr(config, "add_swa_attention_sink_bias", False) and is_swa)
-            )
-            else None
+        # self.attention_sink_bias = (
+        #     nn.Parameter(torch.empty(self.num_attention_heads), requires_grad=False)
+        #     if (
+        #         (getattr(config, "add_full_attention_sink_bias", False) and not is_swa)
+        #         or (getattr(config, "add_swa_attention_sink_bias", False) and is_swa)
+        #     )
+        #     else None
+        # )
+        has_sink = (config.add_full_attention_sink_bias and not is_swa) or (
+            config.add_swa_attention_sink_bias and is_swa
         )
+        if has_sink:
+            self.register_buffer("attention_sink_bias", torch.empty(self.num_attention_heads, dtype=torch.float32))
+        else:
+            self.attention_sink_bias = None
 
         attention_bias = getattr(config, "attention_bias", False)
         if self.projection_layout == "fused_qkv":
@@ -429,6 +436,7 @@ class MiMoV2Model(nn.Module):
     def __init__(self, config: MiMoV2Config, moe_config: MoEConfig, backend: BackendConfig):
         super().__init__()
         self.config = config
+        self.moe_config = moe_config
         self.backend = backend
 
         if backend.gate_precision is None:
@@ -483,7 +491,7 @@ class MiMoV2Model(nn.Module):
             config=self.config,
             inputs_embeds=inputs_embeds,
             attention_mask=attention_mask,
-            cache_position=cache_position,
+            # cache_position=cache_position,
             past_key_values=None,
             position_ids=position_ids,
         )
