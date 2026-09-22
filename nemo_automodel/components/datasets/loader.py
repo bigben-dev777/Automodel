@@ -69,7 +69,9 @@ class TokenizerDatasetConfig(Protocol):
 
     accepts_tokenizer: bool
 
-    def build(self, *, tokenizer: "PreTrainedTokenizerBase | ProcessorMixin | None") -> object:
+    def build(
+        self, *, tokenizer: "PreTrainedTokenizerBase | ProcessorMixin | None"
+    ) -> object:
         """Build the configured dataset with a runtime tokenizer or processor."""
 
 
@@ -98,7 +100,9 @@ class AllRanksDatasetConfig(Protocol):
 class BatchSamplerConfig(Protocol):
     """Typed construction contract for a dataset-specific batch sampler."""
 
-    def build(self, *, dataset_len: int, rank: int, world_size: int) -> Sampler[list[int]]:
+    def build(
+        self, *, dataset_len: int, rank: int, world_size: int
+    ) -> Sampler[list[int]]:
         """Build a per-rank batch sampler for a materialized dataset."""
 
 
@@ -123,15 +127,23 @@ def _shard_iterable_dataset(dataset: Any, *, dp_rank: int, dp_world_size: int) -
     """
     if callable(getattr(dataset, "shard", None)):
         dataset = dataset.shard(dp_world_size, dp_rank)
-        logger.info(f"Sharded IterableDataset via dataset.shard: world_size={dp_world_size}, rank={dp_rank}")
+        logger.info(
+            f"Sharded IterableDataset via dataset.shard: world_size={dp_world_size}, rank={dp_rank}"
+        )
     elif hasattr(dataset, "dataset"):
         from datasets.distributed import split_dataset_by_node
 
         dataset = copy(dataset)
-        dataset.dataset = split_dataset_by_node(dataset.dataset, world_size=dp_world_size, rank=dp_rank)
-        logger.info(f"Sharded dataset via split_dataset_by_node: world_size={dp_world_size}")
+        dataset.dataset = split_dataset_by_node(
+            dataset.dataset, world_size=dp_world_size, rank=dp_rank
+        )
+        logger.info(
+            f"Sharded dataset via split_dataset_by_node: world_size={dp_world_size}"
+        )
     else:
-        logger.warning("IterableDataset does not support sharding; Data may be duplicated across ranks.")
+        logger.warning(
+            "IterableDataset does not support sharding; Data may be duplicated across ranks."
+        )
     return dataset
 
 
@@ -162,9 +174,13 @@ class PackingConfig:
             and self.max_packs is None
         )
         if can_pretokenize:
-            from nemo_automodel.components.datasets.llm.packed_sequence import tokenize_dataset_parallel
+            from nemo_automodel.components.datasets.llm.packed_sequence import (
+                tokenize_dataset_parallel,
+            )
 
-            logger.info("Pre-tokenizing dataset with num_proc=%s before packing", self.num_proc)
+            logger.info(
+                "Pre-tokenizing dataset with num_proc=%s before packing", self.num_proc
+            )
             return tokenize_dataset_parallel(dataset, num_proc=self.num_proc)
         if self.num_proc > 1:
             logger.info(
@@ -196,9 +212,6 @@ class ThdPackingConfig(PackingConfig):
     Requires a model whose forward accepts ``seq_lens`` — packing is skipped (with a warning) otherwise.
     """
 
-    pad_to_multiple_of: int = 1
-    """Align each document's physical span, counting padding within the pack budget."""
-
     def build(
         self,
         dataset: object,
@@ -213,10 +226,14 @@ class ThdPackingConfig(PackingConfig):
         """Pack with THD; returns ``(dataset, None)`` if the model does not accept ``seq_lens``."""
         del attn_implementation
         if not supports_seq_lens:
-            logger.warning("Packed sequence is not supported without seq_lens; disabling packed sequence")
+            logger.warning(
+                "Packed sequence is not supported without seq_lens; disabling packed sequence"
+            )
             return dataset, None
         from nemo_automodel.components.datasets.llm.packed_sequence import pack_dataset
-        from nemo_automodel.components.datasets.utils import packed_sequence_thd_collater
+        from nemo_automodel.components.datasets.utils import (
+            packed_sequence_thd_collater,
+        )
 
         logger.info(f"THD-packing dataset with size: {self.packed_sequence_size}")
         if hasattr(dataset, "shuffle"):
@@ -226,7 +243,6 @@ class ThdPackingConfig(PackingConfig):
             dataset,
             split=split,
             packed_sequence_size=self.packed_sequence_size,
-            pad_to_multiple_of=self.pad_to_multiple_of,
             max_packs=self.max_packs,
             padding_idx=pad_token_id,
             cp_size=cp_size,
@@ -253,7 +269,9 @@ class NeatPackingConfig(PackingConfig):
     ) -> tuple[object, CollateFn]:
         """Pack with NEAT and configure the collator for the selected attention implementation."""
         del supports_seq_lens, cp_size
-        from nemo_automodel.components.datasets.llm.neat_packing import neat_pack_dataset
+        from nemo_automodel.components.datasets.llm.neat_packing import (
+            neat_pack_dataset,
+        )
         from nemo_automodel.components.datasets.utils import neat_packed_collater
 
         logger.info(f"NEAT-packing dataset with size: {self.packed_sequence_size}")
@@ -268,7 +286,9 @@ class NeatPackingConfig(PackingConfig):
             padding_idx=pad_token_id,
             drop_long_samples=self.drop_long_samples,
         )
-        return dataset, partial(neat_packed_collater, attn_implementation=attn_implementation)
+        return dataset, partial(
+            neat_packed_collater, attn_implementation=attn_implementation
+        )
 
 
 _PACKING_CONFIGS: dict[str, type[PackingConfig]] = {
@@ -291,14 +311,18 @@ def _resolve_target(target: Any, registry: dict[str, Any]) -> Any:
     if not isinstance(entry, str):
         return entry
     if "." not in entry:
-        raise ValueError(f"Unknown target {target!r}; expected one of {sorted(registry)} or a dotted path")
+        raise ValueError(
+            f"Unknown target {target!r}; expected one of {sorted(registry)} or a dotted path"
+        )
     import importlib
 
     module_path, _, attr = entry.rpartition(".")
     return getattr(importlib.import_module(module_path), attr)
 
 
-def make_packing_config(target: str | None, kwargs: dict[str, object] | None = None) -> PackingConfig | None:
+def make_packing_config(
+    target: str | None, kwargs: dict[str, object] | None = None
+) -> PackingConfig | None:
     """Resolve a packing-config ``target`` and construct it from ``kwargs`` (``target=None`` → no packing).
 
     ``target`` is either a built-in strategy key (``"thd"`` / ``"neat"``) or a dotted import path to
@@ -311,10 +335,14 @@ def make_packing_config(target: str | None, kwargs: dict[str, object] | None = N
     cls = _resolve_target(target, _PACKING_CONFIGS)
     kwargs = kwargs or {}
     valid = {f.name for f in fields(cls)}
-    union_fields = {f.name for config_cls in _PACKING_CONFIGS.values() for f in fields(config_cls)}
+    union_fields = {
+        f.name for config_cls in _PACKING_CONFIGS.values() for f in fields(config_cls)
+    }
     unknown = sorted(set(kwargs) - valid - union_fields - _LEGACY_PACKING_FIELDS)
     if unknown:
-        raise TypeError(f"{cls.__name__} got unexpected packing config field(s): {', '.join(unknown)}")
+        raise TypeError(
+            f"{cls.__name__} got unexpected packing config field(s): {', '.join(unknown)}"
+        )
     legacy = sorted(set(kwargs) & _LEGACY_PACKING_FIELDS)
     if legacy:
         warnings.warn(
@@ -337,7 +365,9 @@ class CollatorConfig:
     factory: Callable[..., CollateFn]
     kwargs: dict[str, object] = field(default_factory=dict)
 
-    def build(self, *, tokenizer: "PreTrainedTokenizerBase | ProcessorMixin") -> CollateFn:
+    def build(
+        self, *, tokenizer: "PreTrainedTokenizerBase | ProcessorMixin"
+    ) -> CollateFn:
         """Instantiate the collator once with its runtime tokenizer or processor.
 
         Args:
@@ -348,11 +378,15 @@ class CollatorConfig:
         """
         collator = self.factory(tokenizer=tokenizer, **self.kwargs)
         if not callable(collator):
-            raise TypeError(f"Collator factory {self.factory!r} returned non-callable {type(collator).__name__}")
+            raise TypeError(
+                f"Collator factory {self.factory!r} returned non-callable {type(collator).__name__}"
+            )
         return collator
 
 
-def make_collate_fn(target: object, kwargs: dict[str, object] | None = None) -> CollateFn | CollatorConfig | None:
+def make_collate_fn(
+    target: object, kwargs: dict[str, object] | None = None
+) -> CollateFn | CollatorConfig | None:
     """Resolve a collate target into a batch callable or tokenizer-aware config.
 
     ``target`` is a built-in collator key (for example ``"default"``), a dotted import path, or an already
@@ -381,7 +415,9 @@ class _LegacyDatasetConfig:
     kwargs: dict[str, object]
     accepts_tokenizer: bool = False
 
-    def build(self, *, tokenizer: "PreTrainedTokenizerBase | ProcessorMixin | None" = None) -> object:
+    def build(
+        self, *, tokenizer: "PreTrainedTokenizerBase | ProcessorMixin | None" = None
+    ) -> object:
         """Call the wrapped dataset target with its declared YAML arguments.
 
         Args:
@@ -422,6 +458,7 @@ _DATASET_CONFIGS: dict[str, str] = {
         f"{_DATASETS}.llm.mock_seq_cls.MockSequenceClassificationDatasetConfig"
     ),
     f"{_DATASETS}.llm.nanogpt_dataset.NanogptDataset": f"{_DATASETS}.llm.nanogpt_dataset.NanogptDatasetConfig",
+    f"{_DATASETS}.llm.npy_token_dataset.NpyTokenDataset": f"{_DATASETS}.llm.npy_token_dataset.NpyTokenDatasetConfig",
     f"{_DATASETS}.llm.agent_chat.make_agent_chat_dataset": f"{_DATASETS}.llm.agent_chat.AgentChatConfig",
     f"{_DATASETS}.llm.xlam.make_xlam_dataset": f"{_DATASETS}.llm.xlam.XlamConfig",
     f"{_DATASETS}.llm.seq_cls.GLUE_MRPC": f"{_DATASETS}.llm.seq_cls.GLUE_MRPCConfig",
@@ -442,10 +479,9 @@ _DATASET_CONFIGS: dict[str, str] = {
     f"{_DATASETS}.vlm.datasets.make_rdr_dataset": f"{_DATASETS}.vlm.datasets.RdrDatasetConfig",
     f"{_DATASETS}.vlm.datasets.make_cord_v2_dataset": f"{_DATASETS}.vlm.datasets.CordV2DatasetConfig",
     f"{_DATASETS}.vlm.datasets.make_medpix_dataset": f"{_DATASETS}.vlm.datasets.MedPixDatasetConfig",
-    f"{_DATASETS}.vlm.datasets.make_shopify_product_catalogue_dataset": (
-        f"{_DATASETS}.vlm.datasets.ShopifyProductCatalogueDatasetConfig"
+    f"{_DATASETS}.vlm.datasets.make_llava_onevision_dataset": (
+        f"{_DATASETS}.vlm.datasets.LlavaOnevisionDatasetConfig"
     ),
-    f"{_DATASETS}.vlm.datasets.make_llava_onevision_dataset": (f"{_DATASETS}.vlm.datasets.LlavaOnevisionDatasetConfig"),
     f"{_DATASETS}.vlm.datasets.make_tulu3_magicoder_text_mix_dataset": (
         f"{_DATASETS}.vlm.datasets.Tulu3MagicoderTextMixDatasetConfig"
     ),
@@ -456,7 +492,9 @@ _DATASET_CONFIGS: dict[str, str] = {
 }
 
 
-def make_dataset_config(target: object, kwargs: dict[str, object] | None = None) -> DatasetConfig:
+def make_dataset_config(
+    target: object, kwargs: dict[str, object] | None = None
+) -> DatasetConfig:
     """Resolve a dataset ``_target_`` to an object exposing a typed ``build`` method.
 
     Exact legacy registrations map a pre-config dataset class or ``make_*`` factory onto its typed
@@ -477,7 +515,9 @@ def make_dataset_config(target: object, kwargs: dict[str, object] | None = None)
         valid = {f.name for f in fields(obj)}
         unknown = sorted(set(kwargs) - valid)
         if unknown:
-            raise TypeError(f"{obj.__name__} got unexpected dataset config field(s): {', '.join(unknown)}")
+            raise TypeError(
+                f"{obj.__name__} got unexpected dataset config field(s): {', '.join(unknown)}"
+            )
         return cast(DatasetConfig, obj(**kwargs))
     parameters = inspect.signature(obj).parameters
     accepts_tokenizer = "tokenizer" in parameters
@@ -496,13 +536,24 @@ def _make_sampler(
 ) -> Sampler:
     """Build the default map-style sampler (distributed, or length-grouped)."""
     if group_by_length:
-        from nemo_automodel.components.datasets.llm.length_grouped_sampler import LengthGroupedSampler
+        from nemo_automodel.components.datasets.llm.length_grouped_sampler import (
+            LengthGroupedSampler,
+        )
 
         return LengthGroupedSampler(
-            dataset=dataset, batch_size=batch_size, seed=seed, num_replicas=dp_world_size, rank=dp_rank
+            dataset=dataset,
+            batch_size=batch_size,
+            seed=seed,
+            num_replicas=dp_world_size,
+            rank=dp_rank,
         )
     return StatefulDistributedSampler(
-        dataset, seed=seed, drop_last=True, num_replicas=dp_world_size, rank=dp_rank, shuffle=shuffle
+        dataset,
+        seed=seed,
+        drop_last=True,
+        num_replicas=dp_world_size,
+        rank=dp_rank,
+        shuffle=shuffle,
     )
 
 
@@ -546,14 +597,20 @@ class ParallelAwareDataloader(StatefulDataLoader):
         if batch_sampler is not None:
             loader_kwargs["batch_sampler"] = batch_sampler
         elif isinstance(dataset, IterableDataset):
-            dataset = _shard_iterable_dataset(dataset, dp_rank=dp_rank, dp_world_size=dp_world_size)
+            dataset = _shard_iterable_dataset(
+                dataset, dp_rank=dp_rank, dp_world_size=dp_world_size
+            )
             if shuffle and hasattr(dataset, "shuffle"):
                 dataset = dataset.shuffle(buffer_size=shuffle_buffer_size, seed=seed)
-                logger.info("Shuffling IterableDataset with buffer_size=%s", shuffle_buffer_size)
+                logger.info(
+                    "Shuffling IterableDataset with buffer_size=%s", shuffle_buffer_size
+                )
             loader_kwargs["batch_size"] = batch_size
         else:
             if batch_size is None:
-                raise ValueError("batch_size=None is only supported for iterable or explicitly batch-sampled datasets")
+                raise ValueError(
+                    "batch_size=None is only supported for iterable or explicitly batch-sampled datasets"
+                )
             loader_kwargs["sampler"] = _make_sampler(
                 dataset,
                 dp_rank=dp_rank,
@@ -605,9 +662,14 @@ class DataloaderConfig:
     @property
     def emits_thd(self) -> bool:
         """Whether this configuration produces THD-formatted batches."""
-        from nemo_automodel.components.datasets.utils import packed_sequence_thd_collater
+        from nemo_automodel.components.datasets.utils import (
+            packed_sequence_thd_collater,
+        )
 
-        return isinstance(self.packing, ThdPackingConfig) or self.collate_fn is packed_sequence_thd_collater
+        return (
+            isinstance(self.packing, ThdPackingConfig)
+            or self.collate_fn is packed_sequence_thd_collater
+        )
 
     def _build_dataset(
         self,
@@ -660,7 +722,9 @@ class DataloaderConfig:
         Returns:
             Stateful, data-parallel-aware dataloader.
         """
-        dataset = self._build_dataset(tokenizer=tokenizer, dataset_build_context=dataset_build_context)
+        dataset = self._build_dataset(
+            tokenizer=tokenizer, dataset_build_context=dataset_build_context
+        )
 
         collate_override = None
         if self.packing is not None and not self.packing.prepacked:
@@ -683,7 +747,9 @@ class DataloaderConfig:
         collate_fn = collate_override or self.collate_fn
         if isinstance(collate_fn, CollatorConfig):
             if tokenizer is None:
-                raise ValueError("A tokenizer or processor is required to build the configured collator")
+                raise ValueError(
+                    "A tokenizer or processor is required to build the configured collator"
+                )
             collate_fn = collate_fn.build(tokenizer=tokenizer)
         if collate_fn is None:
             if self.batch_size is None:
