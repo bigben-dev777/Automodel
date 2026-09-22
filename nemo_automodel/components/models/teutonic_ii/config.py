@@ -14,37 +14,168 @@
 
 from __future__ import annotations
 
-from nemo_automodel.components.models.mimo_v25.config import MiMoV2Config
+from transformers.configuration_utils import PretrainedConfig
+
+_TEUTONIC_ATTENTION_PROJECTION_LAYOUTS = {"split", "fused_qkv"}
 
 
-class TeutonicIIConfig(MiMoV2Config):
-    """Configuration for Teutonic-II checkpoints derived from MiMo v2.5."""
+class TeutonicIIConfig(PretrainedConfig):
+    """Configuration for Teutonic-II checkpoints."""
 
     model_type = "teutonic_ii"
+    keys_to_ignore_at_inference = ["past_key_values"]
 
-    def __init__(self, *args, **kwargs):
-        attention_projection_layout = kwargs.get("attention_projection_layout", "split")
-        n_routed_experts = kwargs.get("n_routed_experts")
-        n_shared_experts = kwargs.get("n_shared_experts")
-        moe_intermediate_size = kwargs.get("moe_intermediate_size")
-        num_experts_per_tok = kwargs.get("num_experts_per_tok")
-        routed_scaling_factor = kwargs.get("routed_scaling_factor")
-        scoring_func = kwargs.get("scoring_func", "sigmoid")
-        topk_method = kwargs.get("topk_method", "noaux_tc")
-        n_group = kwargs.get("n_group")
-        topk_group = kwargs.get("topk_group")
-        norm_topk_prob = kwargs.get("norm_topk_prob", True)
-        moe_layer_freq = kwargs.get("moe_layer_freq")
+    attribute_map = {
+        "num_local_experts": "n_routed_experts",
+    }
 
-        super().__init__(*args, **kwargs)
+    def __init__(
+        self,
+        vocab_size: int = 151936,
+        hidden_size: int = 4096,
+        intermediate_size: int = 22016,
+        num_hidden_layers: int = 32,
+        num_attention_heads: int = 32,
+        num_key_value_heads: int = 32,
+        hidden_act: str = "silu",
+        max_position_embeddings: int = 32768,
+        initializer_range: float = 0.02,
+        layernorm_epsilon: float = 1e-6,
+        rms_norm_eps: float | None = None,
+        use_cache: bool = True,
+        tie_word_embeddings: bool = False,
+        rope_theta: float = 10000.0,
+        rope_scaling: dict | None = None,
+        attention_dropout: float = 0.0,
+        attention_bias: bool = False,
+        attention_value_scale: float | None = None,
+        head_dim: int | None = None,
+        v_head_dim: int | None = None,
+        swa_num_attention_heads: int | None = None,
+        swa_num_key_value_heads: int | None = None,
+        swa_head_dim: int | None = None,
+        swa_v_head_dim: int | None = None,
+        swa_rope_theta: float | None = None,
+        sliding_window: int | None = None,
+        sliding_window_size: int | None = None,
+        attention_chunk_size: int | None = None,
+        add_full_attention_sink_bias: bool = False,
+        add_swa_attention_sink_bias: bool = False,
+        hybrid_block_size: int | None = None,
+        hybrid_layer_pattern: list[int] | None = None,
+        partial_rotary_factor: float = 1.0,
+        n_routed_experts: int | None = None,
+        n_shared_experts: int | None = None,
+        moe_intermediate_size: int | None = None,
+        num_experts_per_tok: int | None = None,
+        routed_scaling_factor: float | None = None,
+        scoring_func: str = "sigmoid",
+        topk_method: str = "noaux_tc",
+        n_group: int | None = None,
+        topk_group: int | None = None,
+        norm_topk_prob: bool = True,
+        moe_layer_freq: list[int] | None = None,
+        attention_projection_layout: str = "split",
+        torch_dtype: str = "bfloat16",
+        **kwargs,
+    ):
+        rope_parameters = kwargs.pop("rope_parameters", None)
+        if rope_scaling is None and rope_parameters is not None:
+            rope_scaling = rope_parameters
+
+        if attention_projection_layout is None:
+            attention_projection_layout = "split"
+        if attention_projection_layout not in _TEUTONIC_ATTENTION_PROJECTION_LAYOUTS:
+            raise ValueError(
+                f"Unsupported TeutonicII attention projection layout: {attention_projection_layout}"
+            )
 
         self.attention_projection_layout = attention_projection_layout
+        self.vocab_size = vocab_size
+        self.max_position_embeddings = max_position_embeddings
+        self.hidden_size = hidden_size
+        self.intermediate_size = intermediate_size
+        self.num_hidden_layers = num_hidden_layers
+        self.num_attention_heads = num_attention_heads
+
+        if num_key_value_heads is None:
+            num_key_value_heads = num_attention_heads
+        if num_attention_heads % num_key_value_heads != 0:
+            raise ValueError(
+                "num_attention_heads must be divisible by num_key_value_heads"
+            )
+
+        self.num_key_value_heads = num_key_value_heads
+        self.hidden_act = hidden_act
+        self.initializer_range = initializer_range
+        self.layernorm_epsilon = layernorm_epsilon
+        self.rms_norm_eps = layernorm_epsilon if rms_norm_eps is None else rms_norm_eps
+        self.use_cache = use_cache
+        self.rope_theta = rope_theta
+        self.rope_scaling = rope_scaling
+        self.attention_dropout = attention_dropout
+        self.attention_bias = attention_bias
+        self.attention_value_scale = attention_value_scale
+
+        self.head_dim = (
+            head_dim if head_dim is not None else hidden_size // num_attention_heads
+        )
+        self.v_head_dim = v_head_dim if v_head_dim is not None else self.head_dim
+        self.swa_num_attention_heads = (
+            swa_num_attention_heads
+            if swa_num_attention_heads is not None
+            else num_attention_heads
+        )
+        self.swa_num_key_value_heads = (
+            swa_num_key_value_heads
+            if swa_num_key_value_heads is not None
+            else num_key_value_heads
+        )
+        if self.swa_num_attention_heads % self.swa_num_key_value_heads != 0:
+            raise ValueError(
+                "swa_num_attention_heads must be divisible by swa_num_key_value_heads"
+            )
+        self.swa_head_dim = swa_head_dim if swa_head_dim is not None else self.head_dim
+        self.swa_v_head_dim = (
+            swa_v_head_dim if swa_v_head_dim is not None else self.swa_head_dim
+        )
+        self.swa_rope_theta = (
+            swa_rope_theta if swa_rope_theta is not None else rope_theta
+        )
+
+        if sliding_window is None:
+            sliding_window = sliding_window_size
+        self.sliding_window = sliding_window
+        self.sliding_window_size = (
+            sliding_window_size if sliding_window_size is not None else sliding_window
+        )
+        self.attention_chunk_size = attention_chunk_size
+        self.add_full_attention_sink_bias = add_full_attention_sink_bias
+        self.add_swa_attention_sink_bias = add_swa_attention_sink_bias
+
+        if hybrid_block_size is not None and hybrid_layer_pattern is None:
+            hybrid_layer_pattern = [
+                0 if ((i + 1) % hybrid_block_size == 0) else 1
+                for i in range(num_hidden_layers)
+            ]
+        elif hybrid_layer_pattern is None:
+            hybrid_layer_pattern = [0] * num_hidden_layers
+        if len(hybrid_layer_pattern) != num_hidden_layers:
+            raise ValueError("hybrid_layer_pattern length must match num_hidden_layers")
+        self.hybrid_block_size = hybrid_block_size
+        self.hybrid_layer_pattern = hybrid_layer_pattern
+        self.layer_types = [
+            "sliding_attention" if hybrid_layer_pattern[i] == 1 else "full_attention"
+            for i in range(num_hidden_layers)
+        ]
+
+        self.partial_rotary_factor = partial_rotary_factor
         self.n_routed_experts = n_routed_experts
         self.n_shared_experts = n_shared_experts
         self.moe_intermediate_size = (
             moe_intermediate_size
             if moe_intermediate_size is not None
-            else self.intermediate_size
+            else intermediate_size
         )
         self.num_experts_per_tok = num_experts_per_tok
         self.routed_scaling_factor = routed_scaling_factor
@@ -53,11 +184,33 @@ class TeutonicIIConfig(MiMoV2Config):
         self.n_group = n_group
         self.topk_group = topk_group
         self.norm_topk_prob = norm_topk_prob
-        self.moe_layer_freq = (
-            moe_layer_freq
-            if moe_layer_freq is not None
-            else getattr(self, "moe_layer_freq", None)
-        )
+        if isinstance(moe_layer_freq, int):
+            moe_layer_freq = [
+                moe_layer_freq > 0 and i % moe_layer_freq == 0
+                for i in range(num_hidden_layers)
+            ]
+        elif moe_layer_freq is None:
+            moe_layer_freq = [False] * num_hidden_layers
+        if len(moe_layer_freq) != num_hidden_layers:
+            raise ValueError("moe_layer_freq length must match num_hidden_layers")
+        self.moe_layer_freq = moe_layer_freq
+
+        architectures = kwargs.pop("architectures", None)
+        auto_map = kwargs.pop("auto_map", None)
+
+        super().__init__(tie_word_embeddings=tie_word_embeddings, **kwargs)
+        self.torch_dtype = torch_dtype
+        self.rope_parameters = {
+            "rope_theta": rope_theta,
+            "partial_rotary_factor": partial_rotary_factor,
+            "rope_type": "default",
+        }
+        self.architectures = architectures or ["TeutonicIIForCausalLM"]
+        self.auto_map = auto_map or {
+            "AutoConfig": "configuration_teutonic_ii.TeutonicIIConfig",
+            "AutoModel": "modeling_teutonic_ii.TeutonicIIModel",
+            "AutoModelForCausalLM": "modeling_teutonic_ii.TeutonicIIForCausalLM",
+        }
 
 
 __all__ = ["TeutonicIIConfig"]

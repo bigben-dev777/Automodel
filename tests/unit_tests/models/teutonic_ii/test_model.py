@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from nemo_automodel.components.models.common import BackendConfig
+from nemo_automodel.components.models.mimo_v25.model import MiMoV2ForCausalLM
 from nemo_automodel.components.models.teutonic_ii.config import TeutonicIIConfig
 from nemo_automodel.components.models.teutonic_ii.model import TeutonicIIForCausalLM
 from nemo_automodel.components.models.teutonic_ii.state_dict_adapter import (
@@ -70,3 +71,4 @@ def test_teutonic_ii_builds_shared_experts_from_dedicated_runtime():
     assert isinstance(model.model.layers["1"].mlp, MoE)
     assert model.model.layers["1"].mlp.shared_experts is not None
     assert isinstance(model.state_dict_adapter, TeutonicIIStateDictAdapter)
+    assert not issubclass(TeutonicIIForCausalLM, MiMoV2ForCausalLM)

@@ -13,7 +13,10 @@
 # limitations under the License.
 
 from nemo_automodel.components.models.mimo_v25.config import MiMoV2Config
-from nemo_automodel.components.models.mimo_v25.model import MiMoV2ForCausalLM, MiMoV2Model
+from nemo_automodel.components.models.mimo_v25.model import (
+    MiMoV2ForCausalLM,
+    MiMoV2Model,
+)
 from nemo_automodel.components.models.mimo_v25.state_dict_adapter import (
     MiMoV2StateDictAdapter,
 )

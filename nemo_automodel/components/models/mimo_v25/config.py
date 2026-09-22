@@ -200,4 +200,6 @@ class MiMoV2Config(PretrainedConfig):
         # Assign after super().__init__() so our string value wins over any
         # dtype conversion done by PretrainedConfig.
         self.torch_dtype = torch_dtype
+
+
 __all__ = ["MiMoV2Config"]

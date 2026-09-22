@@ -556,6 +556,7 @@ class MiMoV2Model(nn.Module):
     ):
         super().__init__()
         self.config = config
+        self.moe_config = moe_config
         self.backend = backend
 
         if backend.gate_precision is None:
@@ -714,6 +715,8 @@ class MiMoV2Model(nn.Module):
             self.norm.reset_parameters()
         for layer in self.layers.values():
             layer.init_weights(buffer_device)
+
+
 class MiMoV2ForCausalLM(HFCheckpointingMixin, nn.Module, MoEFSDPSyncMixin):
     """NeMo AutoModel causal LM wrapper for MiMo-V2.5-Pro."""
 
@@ -802,6 +805,7 @@ class MiMoV2ForCausalLM(HFCheckpointingMixin, nn.Module, MoEFSDPSyncMixin):
         if moe_overrides:
             moe_defaults.update(moe_overrides)
         resolved_moe_config = moe_config or MoEConfig(**moe_defaults)
+        self.moe_config = resolved_moe_config
 
         self.model = MiMoV2Model(config, resolved_moe_config, self.backend)
         self.lm_head = initialize_linear_module(
@@ -912,6 +916,8 @@ class MiMoV2ForCausalLM(HFCheckpointingMixin, nn.Module, MoEFSDPSyncMixin):
         if _has_dtensor_params(self):
             return
         cast_model_to_dtype(self, dtype)
+
+
 ModelClass = MiMoV2ForCausalLM
 
 __all__ = [
