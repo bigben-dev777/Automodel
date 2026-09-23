@@ -54,6 +54,15 @@ def _peek_num_tokens(path: str | os.PathLike) -> int:
     return int(load_npy_shard(path).size)
 
 
+def _count_sequences_in_shard(path: str | os.PathLike, seq_len: int) -> int:
+    total_tokens = _peek_num_tokens(path)
+    if total_tokens % seq_len != 0:
+        raise ValueError(
+            f"Token shard {path} has {total_tokens} tokens, which is not divisible by seq_len={seq_len}"
+        )
+    return total_tokens // seq_len
+
+
 @dataclass
 class NpyTokenDatasetConfig:
     """Construction-time configuration for :class:`NpyTokenDataset`."""
@@ -95,7 +104,7 @@ class NpyTokenDataset(IterableDataset):
 
     def _setup_worker_context(
         self,
-    ) -> tuple[List[str], random.Random, bool, int, int | None]:
+    ) -> tuple[List[str], bool, int, int | None]:
         worker = get_worker_info()
         rng = random.Random()
         if worker is not None:
@@ -123,7 +132,7 @@ class NpyTokenDataset(IterableDataset):
         if self.shuffle_files:
             rng.shuffle(worker_files)
 
-        return worker_files, rng, split_single_file, file_start_pos, file_end_pos
+        return worker_files, split_single_file, file_start_pos, file_end_pos
 
     def _process_file_tokens(
         self,
@@ -160,36 +169,31 @@ class NpyTokenDataset(IterableDataset):
     def _get_file_iterator(
         self,
         worker_files: List[str],
-        rng: random.Random,
         split_single_file: bool,
         file_start_pos: int,
         file_end_pos: int | None,
     ) -> Iterator[dict]:
-        while True:
-            for file in worker_files:
-                yield from self._process_file_tokens(
-                    file,
-                    split_single_file,
-                    file_start_pos,
-                    file_end_pos,
-                )
-            if self.shuffle_files:
-                rng.shuffle(worker_files)
+        for file in worker_files:
+            yield from self._process_file_tokens(
+                file,
+                split_single_file,
+                file_start_pos,
+                file_end_pos,
+            )
 
     def __iter__(self) -> Iterator[dict]:
-        worker_files, rng, split_single_file, file_start_pos, file_end_pos = (
+        worker_files, split_single_file, file_start_pos, file_end_pos = (
             self._setup_worker_context()
         )
         yield from self._get_file_iterator(
             worker_files,
-            rng,
             split_single_file,
             file_start_pos,
             file_end_pos,
         )
 
     def __len__(self) -> int:  # type: ignore[override]
-        raise NotImplementedError("__len__ is not implemented for NpyTokenDataset.")
+        return sum(_count_sequences_in_shard(file, self.seq_len) for file in self.files)
 
     def __getitem__(self, index: int):
         raise NotImplementedError("__getitem__ is not implemented for NpyTokenDataset.")

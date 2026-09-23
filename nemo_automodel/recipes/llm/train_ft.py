@@ -1590,7 +1590,32 @@ class TrainFinetuneRecipeForNextTokenPrediction(BaseRecipe):
             total_loss = torch.tensor(0.0, dtype=torch.float32, device=self.dist_env.device)
             total_num_label_tokens = 0
 
-            for batch in val_dataloader:
+            val_iterator = val_dataloader
+            val_pbar = None
+            if self.dist_env.is_main:
+                try:
+                    from tqdm import tqdm
+
+                    val_pbar = tqdm(
+                        val_dataloader,
+                        total=len(val_dataloader),
+                        desc="Validation",
+                        unit="batch",
+                        dynamic_ncols=True,
+                    )
+                    val_iterator = val_pbar
+                except (TypeError, NotImplementedError):
+                    from tqdm import tqdm
+
+                    val_pbar = tqdm(
+                        val_dataloader,
+                        desc="Validation",
+                        unit="batch",
+                        dynamic_ncols=True,
+                    )
+                    val_iterator = val_pbar
+
+            for batch in val_iterator:
                 loss_buffer = []
                 num_label_tokens = _count_label_tokens(
                     batch["labels"], _get_loss_ignore_index(getattr(self, "loss_fn", None))
@@ -1606,6 +1631,9 @@ class TrainFinetuneRecipeForNextTokenPrediction(BaseRecipe):
 
                 total_loss += torch.sum(torch.stack(loss_buffer)).item()
                 total_num_label_tokens += num_label_tokens
+
+            if val_pbar is not None:
+                val_pbar.close()
 
         total_loss = self._dp_allreduce(total_loss, include_cp=True)
         total_num_label_tokens = self._dp_allreduce(
