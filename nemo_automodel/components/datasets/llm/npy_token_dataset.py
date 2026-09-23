@@ -64,12 +64,15 @@ class NpyTokenDatasetConfig:
     """Length of each packed training sequence in tokens."""
     shuffle_files: bool = False
     """Shuffle shard order between epochs."""
+    num_val_samples: int | None = None
+    """Optional cap on emitted samples, primarily for validation datasets."""
 
     def build(self) -> "NpyTokenDataset":
         return NpyTokenDataset(
             file_pattern=self.file_pattern,
             seq_len=self.seq_len,
             shuffle_files=self.shuffle_files,
+            num_val_samples=self.num_val_samples,
         )
 
 
@@ -82,6 +85,7 @@ class NpyTokenDataset(IterableDataset):
         seq_len: int,
         *,
         shuffle_files: bool = False,
+        num_val_samples: int | None = None,
     ) -> None:
         super().__init__()
         if isinstance(file_pattern, (str, Path)):
@@ -92,10 +96,13 @@ class NpyTokenDataset(IterableDataset):
             raise FileNotFoundError(f"No files matched pattern {file_pattern}")
         self.seq_len = int(seq_len)
         self.shuffle_files = shuffle_files
+        if num_val_samples is not None and int(num_val_samples) < 0:
+            raise ValueError("num_val_samples must be non-negative when provided")
+        self.num_val_samples = None if num_val_samples is None else int(num_val_samples)
 
     def _setup_worker_context(
         self,
-    ) -> tuple[List[str], random.Random, bool, int, int | None]:
+    ) -> tuple[List[str], random.Random, bool, int, int | None, int | None]:
         worker = get_worker_info()
         rng = random.Random()
         if worker is not None:
@@ -123,7 +130,16 @@ class NpyTokenDataset(IterableDataset):
         if self.shuffle_files:
             rng.shuffle(worker_files)
 
-        return worker_files, rng, split_single_file, file_start_pos, file_end_pos
+        local_sample_limit = None
+        if self.num_val_samples is not None:
+            sample_start, sample_end = _get_start_end_pos_single_file(
+                self.num_val_samples,
+                total_workers,
+                global_worker_id,
+            )
+            local_sample_limit = sample_end - sample_start
+
+        return worker_files, rng, split_single_file, file_start_pos, file_end_pos, local_sample_limit
 
     def _process_file_tokens(
         self,
@@ -164,20 +180,29 @@ class NpyTokenDataset(IterableDataset):
         split_single_file: bool,
         file_start_pos: int,
         file_end_pos: int | None,
+        sample_limit: int | None,
     ) -> Iterator[dict]:
+        samples_yielded = 0
         while True:
             for file in worker_files:
-                yield from self._process_file_tokens(
+                for sample in self._process_file_tokens(
                     file,
                     split_single_file,
                     file_start_pos,
                     file_end_pos,
-                )
+                ):
+                    yield sample
+                    if sample_limit is not None:
+                        samples_yielded += 1
+                        if samples_yielded >= sample_limit:
+                            return
             if self.shuffle_files:
                 rng.shuffle(worker_files)
+            elif sample_limit is not None:
+                return
 
     def __iter__(self) -> Iterator[dict]:
-        worker_files, rng, split_single_file, file_start_pos, file_end_pos = (
+        worker_files, rng, split_single_file, file_start_pos, file_end_pos, sample_limit = (
             self._setup_worker_context()
         )
         yield from self._get_file_iterator(
@@ -186,9 +211,12 @@ class NpyTokenDataset(IterableDataset):
             split_single_file,
             file_start_pos,
             file_end_pos,
+            sample_limit,
         )
 
     def __len__(self) -> int:  # type: ignore[override]
+        if self.num_val_samples is not None:
+            return self.num_val_samples
         raise NotImplementedError("__len__ is not implemented for NpyTokenDataset.")
 
     def __getitem__(self, index: int):
