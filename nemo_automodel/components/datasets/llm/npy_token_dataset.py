@@ -73,12 +73,15 @@ class NpyTokenDatasetConfig:
     """Length of each packed training sequence in tokens."""
     shuffle_files: bool = False
     """Shuffle shard order between epochs."""
+    num_val_samples: int | None = None
+    """Optional cap on emitted samples, primarily for validation datasets."""
 
     def build(self) -> "NpyTokenDataset":
         return NpyTokenDataset(
             file_pattern=self.file_pattern,
             seq_len=self.seq_len,
             shuffle_files=self.shuffle_files,
+            num_val_samples=self.num_val_samples,
         )
 
 
@@ -91,6 +94,7 @@ class NpyTokenDataset(IterableDataset):
         seq_len: int,
         *,
         shuffle_files: bool = False,
+        num_val_samples: int | None = None,
     ) -> None:
         super().__init__()
         if isinstance(file_pattern, (str, Path)):
@@ -101,6 +105,9 @@ class NpyTokenDataset(IterableDataset):
             raise FileNotFoundError(f"No files matched pattern {file_pattern}")
         self.seq_len = int(seq_len)
         self.shuffle_files = shuffle_files
+        if num_val_samples is not None and int(num_val_samples) < 0:
+            raise ValueError("num_val_samples must be non-negative when provided")
+        self.num_val_samples = None if num_val_samples is None else int(num_val_samples)
 
     def _setup_worker_context(
         self,
