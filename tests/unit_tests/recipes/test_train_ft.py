@@ -1816,6 +1816,45 @@ def test_run_validation_epoch_pp_main_rank_receives_from_last_stage(monkeypatch)
     assert isinstance(result.metrics["val_loss"], float)
 
 
+def test_run_validation_epoch_reports_mu_hat_from_base_loss_mean(monkeypatch):
+    """Validation reports base-loss mean and mu_hat when the batch carries base-model losses."""
+    recipe = object.__new__(TrainFinetuneRecipeForNextTokenPrediction)
+
+    object.__setattr__(recipe, "model_parts", [DummyModel()])
+    object.__setattr__(recipe, "loss_fn", MaskedCrossEntropy(ignore_index=0))
+    object.__setattr__(recipe, "step_scheduler", SimpleNamespace(step=1, epoch=0))
+    object.__setattr__(recipe, "optimizer", [SimpleNamespace(param_groups=[{"lr": 0.01}])])
+    object.__setattr__(recipe, "dist_env", SimpleNamespace(device=torch.device("cpu"), rank=0, is_main=True))
+    object.__setattr__(recipe, "pp_enabled", False)
+    object.__setattr__(recipe, "tool_call_evaluator", None)
+
+    monkeypatch.setattr(
+        "nemo_automodel.recipes.llm.train_ft.ScopedRNG",
+        lambda **kwargs: MagicMock(__enter__=lambda s: s, __exit__=lambda s, *a: None),
+    )
+    monkeypatch.setattr(recipe, "_dp_allreduce", lambda val, include_cp=False: val)
+
+    def mock_forward_backward_step(idx, batch, *, loss_buffer, num_label_tokens, num_batches, is_train):
+        loss_buffer.append(torch.tensor(1.2))
+
+    monkeypatch.setattr(recipe, "_forward_backward_step", mock_forward_backward_step)
+
+    val_dataloader = [
+        {
+            "input_ids": torch.tensor([[1, 2], [3, 4]]),
+            "labels": torch.tensor([[0, 1], [0, 2]]),
+            "loss": torch.tensor([0.2, 0.4]),
+        }
+    ]
+
+    result = recipe._run_validation_epoch(val_dataloader)
+
+    assert result.metrics["val_loss"] == pytest.approx(0.6)
+    assert result.metrics["base_loss"] == pytest.approx(0.3)
+    assert result.metrics["mu_hat"] == pytest.approx(0.3)
+    assert result.metrics["num_label_tokens"] == 2
+
+
 # -----------------
 # State dict adapter tests for _maybe_adapt_state_dict_to_hf
 # -----------------
