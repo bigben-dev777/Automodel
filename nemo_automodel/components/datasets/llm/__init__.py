@@ -21,6 +21,8 @@ from .delta_lake_dataset import (  # noqa: F401
     is_delta_lake_path,
 )
 from .nanogpt_dataset import NanogptDataset  # noqa: F401
+from .npy_token_dataset import NpyTokenDataset # noqa: F401
+from .jsonl_token_dataset import JsonlTokenDataset # noqa: F401
 from .neat_packing import neat_pack_dataset  # noqa: F401
 from .retrieval_collator import (  # noqa: F401
     BiEncoderCollator,
@@ -36,6 +38,8 @@ from .xlam import make_xlam_dataset  # noqa: F401
 
 __all__ = [
     "NanogptDataset",
+    "NpyTokenDataset",
+    "JsonlTokenDataset",
     "make_squad_dataset",
     "make_retrieval_dataset",
     "make_normalized_retrieval_dataset",
