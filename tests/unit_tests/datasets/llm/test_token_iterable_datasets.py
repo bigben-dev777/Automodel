@@ -17,6 +17,7 @@ import json
 
 import numpy as np
 import pytest
+import torch.distributed as dist
 
 from nemo_automodel.components.datasets.llm.jsonl_token_dataset import JsonlTokenDataset, JsonlTokenDatasetConfig
 from nemo_automodel.components.datasets.llm.npy_token_dataset import NpyTokenDataset, NpyTokenDatasetConfig
@@ -90,6 +91,50 @@ def test_jsonl_token_dataset_num_validation_samples_is_finite(tmp_path):
     assert len(dataset) == 2
     assert samples[0]["input_ids"] == [10, 11, 12]
     assert samples[1]["input_ids"] == [20, 21, 22]
+
+
+@pytest.mark.parametrize(
+    ("dataset_cls", "factory", "expected_inputs"),
+    [
+        (
+            NpyTokenDataset,
+            lambda shard: np.save(shard, np.arange(16, dtype=np.int32)),
+            ([8, 9, 10], [12, 13, 14]),
+        ),
+        (
+            JsonlTokenDataset,
+            lambda shard: shard.write_text(
+                "\n".join(
+                    [
+                        json.dumps({"tokens": [0, 1, 2, 3], "loss": 0.1}),
+                        json.dumps({"tokens": [4, 5, 6, 7], "loss": 0.2}),
+                        json.dumps({"tokens": [8, 9, 10, 11], "loss": 0.3}),
+                        json.dumps({"tokens": [12, 13, 14, 15], "loss": 0.4}),
+                    ]
+                ),
+                encoding="utf-8",
+            ),
+            ([8, 9, 10], [12, 13, 14]),
+        ),
+    ],
+)
+def test_token_iterable_dataset_len_and_getitem_are_rank_local(
+    tmp_path, monkeypatch, dataset_cls, factory, expected_inputs
+):
+    shard = tmp_path / ("tokens.npy" if dataset_cls is NpyTokenDataset else "tokens.jsonl")
+    factory(shard)
+
+    monkeypatch.setattr(dist, "is_initialized", lambda: True)
+    monkeypatch.setattr(dist, "get_world_size", lambda: 2)
+    monkeypatch.setattr(dist, "get_rank", lambda: 1)
+
+    dataset = dataset_cls(shard, seq_len=4)
+
+    assert len(dataset) == 2
+    assert dataset[0]["input_ids"] == list(expected_inputs[0])
+    assert dataset[1]["input_ids"] == list(expected_inputs[1])
+    with pytest.raises(IndexError, match="local"):
+        _ = dataset[2]
 
 
 @pytest.mark.parametrize("dataset_cls", [NpyTokenDataset, JsonlTokenDataset])

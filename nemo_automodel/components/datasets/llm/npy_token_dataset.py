@@ -30,7 +30,6 @@ from torch.utils.data import IterableDataset, get_worker_info
 
 from nemo_automodel.components.datasets.llm.nanogpt_dataset import (
     _get_start_end_pos_single_file,
-    _get_worker_id_and_total_workers,
 )
 
 __all__ = ["NpyTokenDataset", "NpyTokenDatasetConfig", "load_npy_shard"]
@@ -86,21 +85,40 @@ class NpyTokenDataset(IterableDataset):
             raise ValueError("num_validation_samples must be positive when provided")
         self.num_validation_samples = num_validation_samples
 
+    def _rank_sequence_range(self) -> tuple[int, int]:
+        total_sequences = self.sequences
+        if self.num_validation_samples is not None:
+            total_sequences = min(total_sequences, self.num_validation_samples)
+
+        try:
+            import torch.distributed as dist
+
+            world_size = dist.get_world_size() if dist.is_initialized() else 1
+            rank = dist.get_rank() if dist.is_initialized() else 0
+        except Exception:
+            world_size = 1
+            rank = 0
+
+        return _get_start_end_pos_single_file(total_sequences, world_size, rank)
+
     def _setup_worker_context(
         self,
     ) -> tuple[int, int | None]:
         worker = get_worker_info()
-        global_worker_id, total_workers = _get_worker_id_and_total_workers(worker)
+        rank_start_seq, rank_end_seq = self._rank_sequence_range()
 
-        total_sequences = self.sequences
-        if self.num_validation_samples is not None:
-            total_sequences = min(total_sequences, self.num_validation_samples)
-        start_seq, end_seq = _get_start_end_pos_single_file(
-            total_sequences, total_workers, global_worker_id
+        if worker is None:
+            return rank_start_seq * self.seq_len, rank_end_seq * self.seq_len
+
+        local_total_sequences = rank_end_seq - rank_start_seq
+        worker_start_seq, worker_end_seq = _get_start_end_pos_single_file(
+            local_total_sequences,
+            worker.num_workers,
+            worker.id,
         )
 
-        file_start_pos = start_seq * self.seq_len
-        file_end_pos = end_seq * self.seq_len
+        file_start_pos = (rank_start_seq + worker_start_seq) * self.seq_len
+        file_end_pos = (rank_start_seq + worker_end_seq) * self.seq_len
 
         return file_start_pos, file_end_pos
 
@@ -155,13 +173,15 @@ class NpyTokenDataset(IterableDataset):
             )
 
     def __len__(self) -> int:
-        if self.num_validation_samples is not None:
-            return min(self.sequences, self.num_validation_samples)
-        return self.sequences
+        rank_start_seq, rank_end_seq = self._rank_sequence_range()
+        return rank_end_seq - rank_start_seq
 
     def __getitem__(self, index: int):
-        if index < 0 or index >= self.sequences:
-            raise IndexError(f"Index {index} out of range for dataset with {self.sequences} sequences.")
-        file_start_pos = index * self.seq_len
+        rank_start_seq, rank_end_seq = self._rank_sequence_range()
+        local_sequences = rank_end_seq - rank_start_seq
+        if index < 0 or index >= local_sequences:
+            raise IndexError(f"Index {index} out of range for dataset with {local_sequences} local sequences.")
+        global_index = rank_start_seq + index
+        file_start_pos = global_index * self.seq_len
         file_end_pos = file_start_pos + self.seq_len
         return next(self._process_file_tokens(file_start_pos, file_end_pos))

@@ -22,6 +22,7 @@ The dataset emits one independent sequence block at a time.
 
 from __future__ import annotations
 
+from bisect import bisect_right
 import json
 import logging
 import os
@@ -32,7 +33,6 @@ from torch.utils.data import IterableDataset, get_worker_info
 
 from nemo_automodel.components.datasets.llm.nanogpt_dataset import (
     _get_start_end_pos_single_file,
-    _get_worker_id_and_total_workers,
 )
 
 __all__ = ["JsonlTokenDataset", "JsonlTokenDatasetConfig", "load_jsonl_shard"]
@@ -95,6 +95,31 @@ def _peek_num_sequences(file_path: str | os.PathLike) -> int:
     return count
 
 
+def _peek_blocks_per_sequence(file_path: str | os.PathLike, seq_len: int) -> list[int]:
+    """Count how many fixed-length training blocks each JSONL record yields."""
+    blocks_per_sequence: list[int] = []
+    with open(file_path, "r", encoding="utf-8") as f:
+        for line_num, line in enumerate(f, 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+                tokens = _extract_tokens(obj)
+            except (json.JSONDecodeError, KeyError, TypeError) as e:
+                raise ValueError(
+                    f"Failed to parse line {line_num} in {file_path}: {e}"
+                ) from e
+
+            if len(tokens) < seq_len:
+                raise ValueError(
+                    f"Sequence {line_num} in {file_path} has length {len(tokens)}, "
+                    f"which is shorter than seq_len={seq_len}"
+                )
+            blocks_per_sequence.append(len(tokens) // seq_len)
+    return blocks_per_sequence
+
+
 @dataclass
 class JsonlTokenDatasetConfig:
     """Construction-time configuration for :class:`JsonlTokenDataset`."""
@@ -129,29 +154,52 @@ class JsonlTokenDataset(IterableDataset):
             raise FileNotFoundError(f"File not found: {self.file_path}")
         self.seq_len = int(seq_len)
         self.sequences = _peek_num_sequences(self.file_path)
+        self.blocks_per_sequence = _peek_blocks_per_sequence(self.file_path, self.seq_len)
+        self.total_samples = sum(self.blocks_per_sequence)
+        self.sample_offsets = [0]
+        for blocks in self.blocks_per_sequence:
+            self.sample_offsets.append(self.sample_offsets[-1] + blocks)
         if num_validation_samples is not None and num_validation_samples <= 0:
             raise ValueError("num_validation_samples must be positive when provided")
         self.num_validation_samples = num_validation_samples
 
+    def _rank_sample_range(self) -> tuple[int, int]:
+        total_samples = self.total_samples
+        if self.num_validation_samples is not None:
+            total_samples = min(total_samples, self.num_validation_samples)
+
+        try:
+            import torch.distributed as dist
+
+            world_size = dist.get_world_size() if dist.is_initialized() else 1
+            rank = dist.get_rank() if dist.is_initialized() else 0
+        except Exception:
+            world_size = 1
+            rank = 0
+
+        return _get_start_end_pos_single_file(total_samples, world_size, rank)
+
     def _setup_worker_context(
         self,
     ) -> tuple[int, int | None]:
+        rank_start, rank_end = self._rank_sample_range()
         worker = get_worker_info()
-        global_worker_id, total_workers = _get_worker_id_and_total_workers(worker)
 
-        total_sequences = self.sequences
-        if self.num_validation_samples is not None:
-            total_sequences = min(total_sequences, self.num_validation_samples)
-        start_seq, end_seq = _get_start_end_pos_single_file(
-            total_sequences, total_workers, global_worker_id
+        if worker is None:
+            return rank_start, rank_end
+
+        local_total_samples = rank_end - rank_start
+        worker_start, worker_end = _get_start_end_pos_single_file(
+            local_total_samples,
+            worker.num_workers,
+            worker.id,
         )
-        # For JSONL we work in sequence indices, not token positions
-        return start_seq, end_seq
+        return rank_start + worker_start, rank_start + worker_end
 
     def _process_file_tokens(
         self,
-        start_seq: int,
-        end_seq: int | None,
+        start_sample: int,
+        end_sample: int | None,
     ) -> Iterator[dict]:
         sequences, losses = load_jsonl_shard(self.file_path)
 
@@ -163,55 +211,59 @@ class JsonlTokenDataset(IterableDataset):
             )
             losses = [None] * len(sequences)
 
-        max_seq = (
-            min(end_seq, len(sequences))
-            if end_seq is not None
-            else len(sequences)
+        max_sample = (
+            min(end_sample, self.total_samples)
+            if end_sample is not None
+            else self.total_samples
         )
 
-        for seq_idx in range(start_seq, max_seq):
+        sample_idx = start_sample
+        seq_idx = bisect_right(self.sample_offsets, start_sample) - 1
+
+        while sample_idx < max_sample and seq_idx < len(sequences):
             tokens = sequences[seq_idx]
             loss = losses[seq_idx]
-            if len(tokens) < self.seq_len:
-                # Skip or raise – here we require exact / multiple length
-                raise ValueError(
-                    f"Sequence {seq_idx} in {self.file_path} has length {len(tokens)}, "
-                    f"which is shorter than seq_len={self.seq_len}"
-                )
+            seq_sample_start = self.sample_offsets[seq_idx]
+            seq_sample_end = self.sample_offsets[seq_idx + 1]
+            block_idx = sample_idx - seq_sample_start
 
-            # Pack fixed-length blocks the same way as the original npy loader
-            pos = 0
-            while pos + self.seq_len <= len(tokens):
+            while sample_idx < max_sample and (seq_sample_start + block_idx) < seq_sample_end:
+                pos = block_idx * self.seq_len
                 buf = tokens[pos : pos + self.seq_len]
                 input_ids = list(map(int, buf[:-1]))
                 labels = list(map(int, buf[1:]))
                 yield {"input_ids": input_ids, "labels": labels, "loss": loss}
-                pos += self.seq_len
+                block_idx += 1
+                sample_idx += 1
+
+            seq_idx += 1
 
     def _get_file_iterator(
         self,
-        start_seq: int,
-        end_seq: int | None,
+        start_sample: int,
+        end_sample: int | None,
     ) -> Iterator[dict]:
-        yield from self._process_file_tokens(start_seq, end_seq)
+        yield from self._process_file_tokens(start_sample, end_sample)
 
     def __iter__(self) -> Iterator[dict]:
-        start_seq, end_seq = self._setup_worker_context()
+        start_sample, end_sample = self._setup_worker_context()
         if self.num_validation_samples is not None:
-            yield from self._get_file_iterator(start_seq, end_seq)
+            yield from self._get_file_iterator(start_sample, end_sample)
             return
 
         while True:  # infinite stream (same as original)
-            yield from self._get_file_iterator(start_seq, end_seq)
+            yield from self._get_file_iterator(start_sample, end_sample)
 
     def __len__(self) -> int:
-        if self.num_validation_samples is not None:
-            return min(self.sequences, self.num_validation_samples)
-        return self.sequences
+        rank_start, rank_end = self._rank_sample_range()
+        return rank_end - rank_start
 
     def __getitem__(self, index: int):
-        if index < 0 or index >= self.sequences:
+        rank_start, rank_end = self._rank_sample_range()
+        local_samples = rank_end - rank_start
+        if index < 0 or index >= local_samples:
             raise IndexError(
-                f"Index {index} out of range for dataset with {self.sequences} sequences."
+                f"Index {index} out of range for dataset with {local_samples} local samples."
             )
-        return next(self._process_file_tokens(index, index + 1))
+        global_index = rank_start + index
+        return next(self._process_file_tokens(global_index, global_index + 1))
