@@ -12,11 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Continued pretraining recipe for MiMo-V2.5-Pro on one 8xB200 node.
+# Continued pretraining recipe for MiMo-V2.5-Pro on one 8xB200 node with
+# HybridEP token dispatch and TE MXFP8 expert GEMMs.
 #
-# This variant keeps expert parallelism intra-node (EP=8) and removes pipeline
-# parallelism so it fits a single Blackwell node. The repo's CI topology tag for
-# this class of machine is `gb200`, so the CI block uses that convention.
+# Delta vs mimo_v25_pro_pretrain_b200_ep8.yaml:
+#   - model.backend.experts: torch_mm -> te
+#   - model.backend.te_fp8.recipe: mxfp8
+#
+# MXFP8 requires compute capability 10.0+ (GB200/B200 class hardware).
 #
 # JSONL format:
 #   {"tokens": [token0, token1, ...]}
@@ -31,7 +34,7 @@
 # Launch example:
 #   PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
 #   torchrun --nnodes 1 --nproc-per-node 8 \
-#     app.py examples/llm_pretrain/mimo_v25/mimo_v25_pro_pretrain_b200_ep8.yaml
+#     app.py examples/llm_pretrain/mimo_v25/mimo_v25_pro_pretrain_b200_mxfp8_ep8.yaml
 
 recipe: TrainFinetuneRecipeForNextTokenPrediction
 
@@ -83,14 +86,16 @@ model:
     rms_norm: torch_fp32
     rope_fusion: false
     dispatcher: hybridep
-    experts: torch_mm
+    experts: te
     gate_precision: float32
     enable_hf_state_dict_adapter: true
     enable_fsdp_optimizations: true
+    te_fp8:
+      recipe: mxfp8
 
 checkpoint:
   enabled: true
-  checkpoint_dir: checkpoints/mimo_v25_pro_pretrain_b200_ep8
+  checkpoint_dir: checkpoints/mimo_v25_pro_pretrain_b200_mxfp8_ep8
   model_save_format: safetensors
   save_consolidated: false
   dequantize_base_checkpoint: true
@@ -142,7 +147,7 @@ lr_scheduler:
 wandb:
   enable: false
   project: automodel-mimo-v25-pro
-  name: mimo_v25_pro_pretrain_b200_ep8
+  name: mimo_v25_pro_pretrain_b200_mxfp8_ep8
   mode: online
 
 ci:

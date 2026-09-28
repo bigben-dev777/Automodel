@@ -12,26 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Continued pretraining recipe for MiMo-V2.5-Pro on one 8xB200 node.
+# Custom 8B-A1B MiMo pretraining on one 8x RTX PRO 6000 workstation node with
+# FP8 block scaling on Transformer Engine expert GEMMs.
 #
-# This variant keeps expert parallelism intra-node (EP=8) and removes pipeline
-# parallelism so it fits a single Blackwell node. The repo's CI topology tag for
-# this class of machine is `gb200`, so the CI block uses that convention.
+# Replace the model path below with your local or hub checkpoint/config that
+# contains the modified 8B-A1B config.json. The architecture stays routed to
+# the MiMo-V2.5-Pro implementation via `architectures: [MiMoV25ForCausalLM]`.
 #
-# JSONL format:
-#   {"tokens": [token0, token1, ...]}
-# or
-#   {"input_ids": [token0, token1, ...]}
-#
-# JsonlTokenDataset shifts each block internally:
-#   input_ids = block[:-1]
-#   labels = block[1:]
-# so set dataset.seq_len to desired_context_length + 1.
-#
-# Launch example:
-#   PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
-#   torchrun --nnodes 1 --nproc-per-node 8 \
-#     app.py examples/llm_pretrain/mimo_v25/mimo_v25_pro_pretrain_b200_ep8.yaml
+# Delta vs mimo_v25_8b_a1b_pretrain_pro6000x8_ep8.yaml:
+#   - model.backend.experts: torch_mm -> te
+#   - model.backend.te_fp8.recipe: block
 
 recipe: TrainFinetuneRecipeForNextTokenPrediction
 
@@ -39,7 +29,7 @@ seed: 1234
 
 step_scheduler:
   global_batch_size: 32
-  local_batch_size: 1
+  local_batch_size: 4
   ckpt_every_steps: 500
   val_every_steps: 500
   num_epochs: 1
@@ -71,8 +61,8 @@ model:
   _target_: nemo_automodel.NeMoAutoModelForCausalLM.from_config
   config:
     _target_: nemo_automodel.components.models.mimo_v25.config.MiMoV2Config.from_pretrained
-    pretrained_model_name_or_path: XiaomiMiMo/MiMo-V2.5-Pro
-    name_or_path: XiaomiMiMo/MiMo-V2.5-Pro
+    pretrained_model_name_or_path: /path/to/your/mimo_v25_8b_a1b_checkpoint
+    name_or_path: /path/to/your/mimo_v25_8b_a1b_checkpoint
     architectures: [MiMoV25ForCausalLM]
   trust_remote_code: false
   load_base_model: true
@@ -83,14 +73,16 @@ model:
     rms_norm: torch_fp32
     rope_fusion: false
     dispatcher: hybridep
-    experts: torch_mm
+    experts: te
     gate_precision: float32
     enable_hf_state_dict_adapter: true
     enable_fsdp_optimizations: true
+    te_fp8:
+      recipe: block
 
 checkpoint:
   enabled: true
-  checkpoint_dir: checkpoints/mimo_v25_pro_pretrain_b200_ep8
+  checkpoint_dir: checkpoints/mimo_v25_8b_a1b_pretrain_pro6000x8_ep8_fp8
   model_save_format: safetensors
   save_consolidated: false
   dequantize_base_checkpoint: true
@@ -100,7 +92,7 @@ loss_fn:
 
 dataset:
   _target_: nemo_automodel.components.datasets.llm.jsonl_token_dataset.JsonlTokenDataset
-  file_path: /path/to/mimo_v25_train.jsonl
+  file_path: /path/to/mimo_v25_8b_a1b_train.jsonl
   seq_len: 4097
 
 dataloader:
@@ -112,7 +104,7 @@ dataloader:
 
 validation_dataset:
   _target_: nemo_automodel.components.datasets.llm.jsonl_token_dataset.JsonlTokenDataset
-  file_path: /path/to/mimo_v25_validation.jsonl
+  file_path: /path/to/mimo_v25_8b_a1b_validation.jsonl
   seq_len: 4097
   num_validation_samples: 128
 
@@ -141,12 +133,11 @@ lr_scheduler:
 
 wandb:
   enable: false
-  project: automodel-mimo-v25-pro
-  name: mimo_v25_pro_pretrain_b200_ep8
+  project: automodel-mimo-v25-8b-a1b
+  name: mimo_v25_8b_a1b_pretrain_pro6000x8_ep8_fp8
   mode: online
 
 ci:
   recipe_owner: Simar-malhotra09
   nodes: 1
   time: "02:00:00"
-  cluster_tag: gb200

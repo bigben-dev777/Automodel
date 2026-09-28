@@ -23,6 +23,7 @@ The dataset emits one independent sequence block at a time.
 from __future__ import annotations
 
 import json
+import logging
 import os
 from dataclasses import dataclass
 from typing import Iterator
@@ -35,6 +36,9 @@ from nemo_automodel.components.datasets.llm.nanogpt_dataset import (
 )
 
 __all__ = ["JsonlTokenDataset", "JsonlTokenDatasetConfig", "load_jsonl_shard"]
+
+
+logger = logging.getLogger(__name__)
 
 
 def _extract_tokens(obj: dict) -> list[int]:
@@ -99,11 +103,14 @@ class JsonlTokenDatasetConfig:
     """Path to the single JSONL shard file."""
     seq_len: int
     """Length of each packed training sequence in tokens."""
+    num_validation_samples: int | None = None
+    """Optional finite cap used for validation instead of the default infinite stream."""
 
     def build(self) -> "JsonlTokenDataset":
         return JsonlTokenDataset(
             file_path=self.file_path,
             seq_len=self.seq_len,
+            num_validation_samples=self.num_validation_samples,
         )
 
 
@@ -114,6 +121,7 @@ class JsonlTokenDataset(IterableDataset):
         self,
         file_path: str | os.PathLike,
         seq_len: int,
+        num_validation_samples: int | None = None,
     ) -> None:
         super().__init__()
         self.file_path = str(file_path)
@@ -121,6 +129,9 @@ class JsonlTokenDataset(IterableDataset):
             raise FileNotFoundError(f"File not found: {self.file_path}")
         self.seq_len = int(seq_len)
         self.sequences = _peek_num_sequences(self.file_path)
+        if num_validation_samples is not None and num_validation_samples <= 0:
+            raise ValueError("num_validation_samples must be positive when provided")
+        self.num_validation_samples = num_validation_samples
 
     def _setup_worker_context(
         self,
@@ -129,6 +140,8 @@ class JsonlTokenDataset(IterableDataset):
         global_worker_id, total_workers = _get_worker_id_and_total_workers(worker)
 
         total_sequences = self.sequences
+        if self.num_validation_samples is not None:
+            total_sequences = min(total_sequences, self.num_validation_samples)
         start_seq, end_seq = _get_start_end_pos_single_file(
             total_sequences, total_workers, global_worker_id
         )
@@ -143,7 +156,11 @@ class JsonlTokenDataset(IterableDataset):
         sequences, losses = load_jsonl_shard(self.file_path)
 
         if losses is None or len(losses) != len(sequences):
-            print(f"Warning: Losses are missing or do not match the number of sequences in {self.file_path}, Not calculate Mu_hat and LCB")
+            logger.warning(
+                "Losses are missing or do not match the number of sequences in %s; "
+                "Mu_hat and LCB metrics will be skipped.",
+                self.file_path,
+            )
             losses = [None] * len(sequences)
 
         max_seq = (
@@ -180,10 +197,16 @@ class JsonlTokenDataset(IterableDataset):
 
     def __iter__(self) -> Iterator[dict]:
         start_seq, end_seq = self._setup_worker_context()
+        if self.num_validation_samples is not None:
+            yield from self._get_file_iterator(start_seq, end_seq)
+            return
+
         while True:  # infinite stream (same as original)
             yield from self._get_file_iterator(start_seq, end_seq)
 
     def __len__(self) -> int:
+        if self.num_validation_samples is not None:
+            return min(self.sequences, self.num_validation_samples)
         return self.sequences
 
     def __getitem__(self, index: int):

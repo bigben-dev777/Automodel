@@ -1589,22 +1589,12 @@ class TrainFinetuneRecipeForNextTokenPrediction(BaseRecipe):
 
             total_loss = torch.tensor(0.0, dtype=torch.float32, device=self.dist_env.device)
             total_num_label_tokens = 0
-            total_base_loss = torch.tensor(0.0, dtype=torch.float32, device=self.dist_env.device)
-            total_base_loss_count = 0
 
             for batch in val_dataloader:
                 loss_buffer = []
                 num_label_tokens = _count_label_tokens(
                     batch["labels"], _get_loss_ignore_index(getattr(self, "loss_fn", None))
                 )
-                base_loss = batch.get("loss")
-                if base_loss is not None:
-                    if not isinstance(base_loss, torch.Tensor):
-                        base_loss = torch.as_tensor(base_loss, dtype=torch.float32, device=self.dist_env.device)
-                    else:
-                        base_loss = base_loss.to(device=self.dist_env.device, dtype=torch.float32)
-                    total_base_loss += base_loss.sum()
-                    total_base_loss_count += int(base_loss.numel())
                 self._forward_backward_step(
                     0,
                     batch,
@@ -1621,10 +1611,6 @@ class TrainFinetuneRecipeForNextTokenPrediction(BaseRecipe):
         total_num_label_tokens = self._dp_allreduce(
             torch.tensor(total_num_label_tokens, dtype=torch.long, device=self.dist_env.device)
         ).item()
-        total_base_loss = self._dp_allreduce(total_base_loss, include_cp=True)
-        total_base_loss_count = self._dp_allreduce(
-            torch.tensor(total_base_loss_count, dtype=torch.long, device=self.dist_env.device)
-        ).item()
         val_loss = total_loss / max(total_num_label_tokens, 1e-8)
 
         # For PP, send val_loss and num_label_tokens from last stage to main rank
@@ -1638,10 +1624,6 @@ class TrainFinetuneRecipeForNextTokenPrediction(BaseRecipe):
                 total_num_label_tokens = pp_num_tokens.item()
 
         val_loss = val_loss.item() if isinstance(val_loss, torch.Tensor) else val_loss
-        base_mean_loss = None
-        if total_base_loss_count > 0:
-            base_mean = total_base_loss / total_base_loss_count
-            base_mean_loss = base_mean.item() if isinstance(base_mean, torch.Tensor) else float(base_mean)
 
         metrics = {
             "val_loss": val_loss,
@@ -1649,9 +1631,6 @@ class TrainFinetuneRecipeForNextTokenPrediction(BaseRecipe):
             "num_label_tokens": total_num_label_tokens,
             "mem": torch.cuda.max_memory_allocated() / 1024**3,
         }
-        if base_mean_loss is not None:
-            metrics["base_loss"] = base_mean_loss
-            metrics["mu_hat"] = val_loss - base_mean_loss
 
         # Tool-call accuracy is the only signal that catches "loss going
         # down because format was learned but the model picks wrong tools".

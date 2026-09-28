@@ -14,8 +14,8 @@
 
 """IterableDataset for pretokenized ``.npy`` token shards.
 
-This loader targets a fixed-length packed-sequence single ``.npy`` file. 
-The file stores a flat token array whose length is an integer multiple of ``seq_len``. 
+This loader targets a fixed-length packed-sequence single ``.npy`` file.
+The file stores a flat token array whose length is an integer multiple of ``seq_len``.
 The dataset emits one independent sequence block at a time.
 """
 
@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Iterator
 
 import numpy as np
@@ -57,11 +56,14 @@ class NpyTokenDatasetConfig:
     """Path to the single ``.npy`` shard file."""
     seq_len: int
     """Length of each packed training sequence in tokens."""
+    num_validation_samples: int | None = None
+    """Optional finite cap used for validation instead of the default infinite stream."""
 
     def build(self) -> "NpyTokenDataset":
         return NpyTokenDataset(
             file_path=self.file_path,
             seq_len=self.seq_len,
+            num_validation_samples=self.num_validation_samples,
         )
 
 
@@ -72,6 +74,7 @@ class NpyTokenDataset(IterableDataset):
         self,
         file_path: str | os.PathLike,
         seq_len: int,
+        num_validation_samples: int | None = None,
     ) -> None:
         super().__init__()
         self.file_path = str(file_path)
@@ -79,18 +82,23 @@ class NpyTokenDataset(IterableDataset):
             raise FileNotFoundError(f"File not found: {self.file_path}")
         self.seq_len = int(seq_len)
         self.sequences = _peek_num_tokens(self.file_path) // self.seq_len
+        if num_validation_samples is not None and num_validation_samples <= 0:
+            raise ValueError("num_validation_samples must be positive when provided")
+        self.num_validation_samples = num_validation_samples
 
     def _setup_worker_context(
         self,
     ) -> tuple[int, int | None]:
         worker = get_worker_info()
         global_worker_id, total_workers = _get_worker_id_and_total_workers(worker)
-        
+
         total_sequences = self.sequences
+        if self.num_validation_samples is not None:
+            total_sequences = min(total_sequences, self.num_validation_samples)
         start_seq, end_seq = _get_start_end_pos_single_file(
             total_sequences, total_workers, global_worker_id
         )
-        
+
         file_start_pos = start_seq * self.seq_len
         file_end_pos = end_seq * self.seq_len
 
@@ -115,7 +123,7 @@ class NpyTokenDataset(IterableDataset):
         )
 
         while pos + self.seq_len <= max_pos:
-            buf = tokens[pos : pos + self.seq_len ]
+            buf = tokens[pos : pos + self.seq_len]
             input_ids = buf[:-1].astype(np.int32, copy=False).tolist()
             labels = buf[1:].astype(np.int64, copy=False).tolist()
             yield {"input_ids": input_ids, "labels": labels}
@@ -133,6 +141,13 @@ class NpyTokenDataset(IterableDataset):
 
     def __iter__(self) -> Iterator[dict]:
         file_start_pos, file_end_pos = self._setup_worker_context()
+        if self.num_validation_samples is not None:
+            yield from self._get_file_iterator(
+                file_start_pos,
+                file_end_pos,
+            )
+            return
+
         while True:
             yield from self._get_file_iterator(
                 file_start_pos,
@@ -140,6 +155,8 @@ class NpyTokenDataset(IterableDataset):
             )
 
     def __len__(self) -> int:
+        if self.num_validation_samples is not None:
+            return min(self.sequences, self.num_validation_samples)
         return self.sequences
 
     def __getitem__(self, index: int):
