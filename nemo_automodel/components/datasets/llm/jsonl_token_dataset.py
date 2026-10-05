@@ -22,12 +22,12 @@ The dataset emits one independent sequence block at a time.
 
 from __future__ import annotations
 
-from bisect import bisect_right
 import json
 import logging
 import os
+from bisect import bisect_right
 from dataclasses import dataclass
-from typing import Iterator
+from typing import ClassVar, Iterator, cast
 
 from torch.utils.data import IterableDataset, get_worker_info
 
@@ -39,6 +39,8 @@ __all__ = ["JsonlTokenDataset", "JsonlTokenDatasetConfig", "load_jsonl_shard"]
 
 
 logger = logging.getLogger(__name__)
+
+CROSS_ENTROPY_IGNORE_IDX = -100
 
 
 def _extract_tokens(obj: dict) -> list[int]:
@@ -58,12 +60,15 @@ def extract_loss(obj: dict) -> float:
         return float(obj["loss"])
     if "king_loss" in obj:
         return float(obj["king_loss"])
-    raise KeyError(
-        f"JSONL line must contain 'loss' or 'king_loss'. Found keys: {list(obj.keys())}"
-    )
+    # raise KeyError(
+    #     f"JSONL line must contain 'loss' or 'king_loss'. Found keys: {list(obj.keys())}"
+    # )
+    return 0.0
 
 
-def load_jsonl_shard(file_path: str | os.PathLike) -> tuple[list[list[int]], list[float]]:
+def load_jsonl_shard(
+    file_path: str | os.PathLike,
+) -> tuple[list[list[int]], list[float]]:
     """Load a single JSONL token shard as a list of token sequences."""
     sequences: list[list[int]] = []
     losses: list[float] = []
@@ -120,9 +125,61 @@ def _peek_blocks_per_sequence(file_path: str | os.PathLike, seq_len: int) -> lis
     return blocks_per_sequence
 
 
+def _build_eos_boundary_metadata(
+    input_ids: list[int],
+    labels: list[int],
+    eos_token_id: int,
+) -> dict[str, list[int]]:
+    """Recover packed document-boundary metadata from EOS-delimited tokens.
+
+    Args:
+        input_ids: Shifted token IDs of shape [sequence]. EOS tokens terminate
+            the current document; the next token begins a new document.
+        labels: Shifted next-token labels of shape [sequence]. Labels at EOS
+            input positions are masked to avoid cross-document supervision.
+        eos_token_id: Token ID marking the end of one document.
+
+    Returns:
+        Mapping with masked labels, per-token position IDs, per-document THD
+        lengths, and a 1-based indexed attention mask identifying each document.
+    """
+    position_ids: list[int] = []
+    seq_lens: list[int] = []
+    attention_mask: list[int] = []
+    masked_labels = list(labels)
+    current_doc_len = 0
+    current_doc_id = 1
+
+    for index, token_id in enumerate(input_ids):
+        position_ids.append(current_doc_len)
+        attention_mask.append(current_doc_id)
+        current_doc_len += 1
+        if token_id == eos_token_id:
+            masked_labels[index] = CROSS_ENTROPY_IGNORE_IDX
+            seq_lens.append(current_doc_len)
+            current_doc_len = 0
+            current_doc_id += 1
+
+    if current_doc_len > 0:
+        seq_lens.append(current_doc_len)
+
+    if not seq_lens:
+        seq_lens = [len(input_ids)]
+
+    return {
+        "labels": cast(list[int], masked_labels),
+        "position_ids": position_ids,
+        "seq_lens": seq_lens,
+        "seq_lens_padded": list(seq_lens),
+        "attention_mask": attention_mask,
+    }
+
+
 @dataclass
 class JsonlTokenDatasetConfig:
     """Construction-time configuration for :class:`JsonlTokenDataset`."""
+
+    accepts_tokenizer: ClassVar[bool] = True
 
     file_path: str | os.PathLike
     """Path to the single JSONL shard file."""
@@ -130,12 +187,25 @@ class JsonlTokenDatasetConfig:
     """Length of each packed training sequence in tokens."""
     num_validation_samples: int | None = None
     """Optional finite cap used for validation instead of the default infinite stream."""
+    derive_boundary_attention_from_eos: bool = False
+    """Recover document-boundary metadata from EOS-delimited packed blocks."""
+    eos_token_id: int | None = None
+    """Optional explicit EOS token ID used when deriving boundary metadata."""
 
-    def build(self) -> "JsonlTokenDataset":
+    def build(self, *, tokenizer=None) -> "JsonlTokenDataset":
+        resolved_eos_token_id = self.eos_token_id
+        if self.derive_boundary_attention_from_eos and resolved_eos_token_id is None:
+            resolved_eos_token_id = getattr(tokenizer, "eos_token_id", None)
+            if resolved_eos_token_id is None:
+                raise ValueError(
+                    "derive_boundary_attention_from_eos=True requires either eos_token_id in the dataset "
+                    "config or a tokenizer with eos_token_id"
+                )
         return JsonlTokenDataset(
             file_path=self.file_path,
             seq_len=self.seq_len,
             num_validation_samples=self.num_validation_samples,
+            eos_token_id=resolved_eos_token_id,
         )
 
 
@@ -147,6 +217,7 @@ class JsonlTokenDataset(IterableDataset):
         file_path: str | os.PathLike,
         seq_len: int,
         num_validation_samples: int | None = None,
+        eos_token_id: int | None = None,
     ) -> None:
         super().__init__()
         self.file_path = str(file_path)
@@ -154,7 +225,9 @@ class JsonlTokenDataset(IterableDataset):
             raise FileNotFoundError(f"File not found: {self.file_path}")
         self.seq_len = int(seq_len)
         self.sequences = _peek_num_sequences(self.file_path)
-        self.blocks_per_sequence = _peek_blocks_per_sequence(self.file_path, self.seq_len)
+        self.blocks_per_sequence = _peek_blocks_per_sequence(
+            self.file_path, self.seq_len
+        )
         self.total_samples = sum(self.blocks_per_sequence)
         self.sample_offsets = [0]
         for blocks in self.blocks_per_sequence:
@@ -162,6 +235,7 @@ class JsonlTokenDataset(IterableDataset):
         if num_validation_samples is not None and num_validation_samples <= 0:
             raise ValueError("num_validation_samples must be positive when provided")
         self.num_validation_samples = num_validation_samples
+        self.eos_token_id = eos_token_id
 
     def _rank_sample_range(self) -> tuple[int, int]:
         total_samples = self.total_samples
@@ -227,12 +301,22 @@ class JsonlTokenDataset(IterableDataset):
             seq_sample_end = self.sample_offsets[seq_idx + 1]
             block_idx = sample_idx - seq_sample_start
 
-            while sample_idx < max_sample and (seq_sample_start + block_idx) < seq_sample_end:
+            while (
+                sample_idx < max_sample
+                and (seq_sample_start + block_idx) < seq_sample_end
+            ):
                 pos = block_idx * self.seq_len
                 buf = tokens[pos : pos + self.seq_len]
                 input_ids = list(map(int, buf[:-1]))
                 labels = list(map(int, buf[1:]))
-                yield {"input_ids": input_ids, "labels": labels, "loss": loss}
+                sample = {"input_ids": input_ids, "labels": labels}
+                if self.eos_token_id is not None:
+                    sample.update(
+                        _build_eos_boundary_metadata(
+                            input_ids, labels, self.eos_token_id
+                        )
+                    )
+                yield sample
                 block_idx += 1
                 sample_idx += 1
 
